@@ -13,7 +13,8 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 - [Komponen Kode](#-komponen-kode)
 - [Setup & Instalasi](#-setup--instalasi)
 - [Dashboard Web](#-dashboard-web)
-- [FAQ / Pelajaran](#-faq--pelajaran)
+- [Perjalanan Kode & Pelajaran](#-perjalanan-kode--pelajaran)
+- [FAQ / Troubleshooting](#-faq--troubleshooting)
 - [Lisensi](#-lisensi)
 
 ---
@@ -247,6 +248,203 @@ const MQTT_USER = "username";
 const MQTT_PASS = "password";
 const MQTT_TOPIC = "apmbob/tracker/gps";
 ```
+
+---
+
+## 📖 Perjalanan Kode & Pelajaran
+
+Dokumentasi proses belajar dari awal sampai akhir — biar lo paham gimana struggle dan fix yang dilakuin.
+
+---
+
+### 🥾 Awal: SIM800L Gagal Total
+
+**Masalah:** `+CME ERROR: 10` — SIM not detected.
+
+**Yang udah dicoba:**
+1. Konek 5VIN dari USB ESP32 → gagal
+2. Ganti baud 9600, 115200, 57600, dll → module echo `AT` tapi gak pernah `OK`
+3. Ganti pin RX/TX dari GPIO16/17 → GPIO26/27 (Serial1)
+4. Tambah auto-detect baud → tetep gak bisa
+5. Tambah PWRKEY simulation → butuh hardware
+
+**Kesimpulan:** SIM800L butuh **arus 2A peak**. USB laptop (~500mA) cukup buat echo tapi gak cukup buat boot GSM processor. Solusi: power bank dedicated atau kapasitor 1000µF. Sementara **fallback ke WiFi**.
+
+**Pelajaran:**
+- Jangan percaya multimeter aja — ukur arus juga, bukan cuma tegangan
+- SIM800L V2 butuh arus gede banget pas register ke BTS
+- `Serial1.begin(baud, config, RX, TX)` di ESP32 itu fleksibel — bisa pake pin mana aja
+
+---
+
+### 🗺 GPS NEO-6M: Dari Nol ke Fix
+
+**Masalah:** GPS gak dapet fix — padahal LED kedip-kedip.
+
+**Yang dipelajari:**
+- LED kedip 1 detik = **mencari** satelit, BUKAN berarti fix
+- LED mati/kedip lambat = **fix didapat**
+- Minimal **4 satelit** dengan SNR ≥ 20 dB buat fix 3D
+- Butuh **view langit terbuka** — dalem ruangan susah dapet fix
+
+**Pelajaran:**
+- `$GPRMC` status `V` = Void (no fix), `A` = Active (fix)
+- Cold start NEO-6M butuh ~30-60 detik
+- Satelit di bawah elevasi 10° biasanya noise — SNR rendah
+
+---
+
+### 📡 Parsing GSV: Elevasi & Azimuth Fix yang Ribet
+
+Ini bagian paling seru — dari data satelit mentah sampe tampil di dashboard.
+
+#### Step 1: Nemu ada GSV di NMEA
+
+```
+$GPGSV,3,1,12,02,41,130,34,05,12,052,29*7B
+```
+
+Awalnya cuma liat `gps.satellites.value()` — jumlah satelit doang. Padahal di GSV ada:
+- **PRN** (nomor ID satelit)
+- **Elevasi** (derajat dari horizon)
+- **Azimuth** (derajat dari utara)
+- **SNR** (signal strength 0-99 dB)
+
+#### Step 2: Parse manual — karena TinyGPSPlus gak support detail satelit
+
+Bikin fungsi `parseGSV()` yang:
+1. Nangkep raw NMEA line dari `Serial2`
+2. Split by koma
+3. Ambil totalMsg, msgNum, totalSats
+4. Loop 4 field per satelit
+
+**Bug pertama: index offset salah**
+
+```cpp
+// SALAH — header field index geser 1
+int totalMsg = atoi(tokens[2]);  // dapet msgNum, bukan totalMsg!
+int msgNum = atoi(tokens[3]);    // dapet totalSats!
+int totalSats = atoi(tokens[4]); // dapet PRN satelit pertama!
+// for loop mulai dari i=5, salah juga
+```
+
+Akibat: `msgNum == 1` gak pernah true → accumulator **gak pernah reset** + **gak pernah finalize** → `satList` selalu kosong → dashboard nunjukin "Mencari satelit..." terus.
+
+**Fix:**
+```cpp
+// BENAR — GSV format: $GPGSV,total,msgNum,satInView,prn,elev,azim,snr,...
+int totalMsg = atoi(tokens[1]);  // ✅
+int msgNum = atoi(tokens[2]);    // ✅
+int totalSats = atoi(tokens[3]); // ✅
+for (int i = 4; i + 3 < tokCount; i += 4)  // ✅ satelit mulai dari index 4
+```
+
+#### Step 3: GSV multi-message accumulator
+
+GSV bisa 1-3 baris (kalo banyak satelit). Pake accumulator:
+- `msgNum == 1` → reset accumulator
+- `msgNum == totalMsg` → copy accumulator ke satList (finalize)
+- Di antaranya → accumulate
+
+**Debug:** tambah `Serial.printf("[GSV] Complete: %d sats parsed\n", satCount)` biar kelihatan di serial
+
+#### Step 4: Dashboard rendering
+
+Data sampe di dashboard sebagai:
+```json
+"satellites":[{"p":10,"e":61,"a":16,"s":38}, {"p":23,"e":59,"a":108,"s":37}]
+```
+
+(p = PRN, e = elevasi, a = azimuth, s = SNR)
+
+Di React, sorting by SNR descending, render signal bars 5 level:
+- SNR ≥ 40 dB → hijau 🟢 (sinyal kuat)
+- SNR 20-40 dB → kuning 🟡 (cukup)
+- SNR < 20 dB → merah 🔴 (lemah)
+
+**Pelajaran:**
+- NMEA itu cuma text dipisah koma — tinggal `strtok` / split manual
+- `atoi()` berhenti otomatis di karakter non-angka — `"29*7B"` → `29`
+- GSV multi-message butuh accumulator state machine
+- GSV parsing ini ngajarin: **jangan percaya offset index**, trace pake contoh nyata
+
+---
+
+### 🔌 WiFi: Port 8883 Diblokir
+
+**Masalah:** MQTT gagal — `espClient.connect` return error.
+
+**Penyebab:** WiFi tertentu (hotspot HP, WiFi kampus/kantor) **memblokir port non-standar**.
+
+**Yang dipelajari:**
+- Port **8883** (MQTT TLS) bukan port umum kayak 80/443
+- Coba ganti WiFi — ada yang allow, ada yang block
+- **Solusi:** pake WiFi "HiFi MQ" dan "AsepDanSiti" — port 8883 terbuka
+- Dashboard pake **WebSocket port 8884** (beda port dari ESP32)
+
+**Pelajaran:**
+- Kalo MQTT gagal, pertama cek DNS, kedua cek port
+- Browsergate WebSocket (`wss://`) otomatis lewat port 443 kalo pake HiveMQ Cloud — lebih aman
+- ESP32 pake `WiFiClientSecure` + `setInsecure()` buat TLS tanpa sertifikat
+
+---
+
+### 🖥 Dashboard: Next.js + Leaflet + MQTT
+
+**Masalah:** Leaflet & MQTT library pake `window` — error pas SSR (Server Side Rendering).
+
+**Fix:**
+```javascript
+// Import dinamis di dalem useEffect — cuma jalan di browser
+Promise.all([import("leaflet"), import("mqtt")])
+  .then(([leaf, mq]) => {
+    const L = leaf.default;
+    const mqtt = mq.default;
+    // ...
+  });
+```
+
+**Masalah Firebase:** Path error karena karakter `.` di ISO timestamp.
+```
+Firebase: Paths can't contain ".", "#", "$", "[", or "]"
+```
+
+**Fix:** Pake `Date.now()` (angka murni) sebagai key — `apmbob/tracker/1779372140685`
+
+---
+
+### 🔥 Firebase: Permission Denied
+
+**Masalah:** `WARNING: set at /apmbob/tracker/... failed: permission_denied`
+
+**Fix:** Firebase Realtime Database security rules di-set ke:
+```json
+{
+  "rules": {
+    ".read": true,
+    ".write": true
+  }
+}
+```
+
+**Pelajaran:** Firebase RTDB default-nya **terkunci** — harus diubah manual di console.
+
+---
+
+### 🧠 Ringkasan Pelajaran Teknis
+
+| Konsep | Yang Dipelajari |
+|--------|----------------|
+| **NMEA 0183** | Format data GPS: RMC (posisi), GGA (fix), GSV (satelit), VTG (kecepatan) |
+| **TinyGPSPlus** | Library parsing GPS — dapet lat/lng/speed/heading, tapi **gak dapet detail satelit** |
+| **Manual NMEA parsing** | Split string by koma, `atoi()`, state machine buat multi-message |
+| **ESP32 UART** | `Serial1.begin(baud, config, RX, TX)` → bisa pin mana aja |
+| **MQTT TLS** | ESP32 → `WiFiClientSecure.setInsecure()`, Dashboard → WebSocket `wss://` |
+| **Next.js SSR** | Library browser-only harus dynamic import |
+| **Firebase RTDB** | Path restriction (gak boleh `.`, `#`, `$`, `[`, `]`) |
+| **Leaflet** | Map, marker, polyline, divIcon custom |
+| **SIM800L power** | Butuh 2A — jangan dari USB laptop |
+| **GSV multi-message** | Accumulator + flag `msgNum == totalMsg` buat finalize |
 
 ---
 
