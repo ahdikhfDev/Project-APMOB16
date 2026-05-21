@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f4eedd;
+  --foreground: #000000;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Space Grotesk', sans-serif;
+  background-image: radial-gradient(#000000 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.neo-border {
+  border: 3px solid #000;
+}
+
+.neo-shadow {
+  box-shadow: 6px 6px 0px 0px #000;
+  transition: all 0.2s ease-in-out;
+}
+
+.neo-shadow:hover {
+  transform: translate(2px, 2px);
+  box-shadow: 4px 4px 0px 0px #000;
+}
+
+.neo-card {
+  border: 3px solid #000;
+  box-shadow: 6px 6px 0px 0px #000;
+  border-radius: 8px;
+}
+
+.car-marker {
+  background-color: #ff3366;
+  color: white;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px solid #000;
+  box-shadow: 4px 4px 0px 0px #000;
+  font-size: 18px;
+}
+
+.leaflet-bar {
+  border: none !important;
+  box-shadow: none !important;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.leaflet-bar a {
+  background-color: #fff !important;
+  color: #000 !important;
+  border: 3px solid #000 !important;
+  box-shadow: 4px 4px 0px 0px #000 !important;
+  border-radius: 4px !important;
+  width: 36px !important;
+  height: 36px !important;
+  line-height: 30px !important;
+  font-weight: bold !important;
+}
+
+.leaflet-bar a:hover {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0px 0px #000 !important;
+}
+
+.leaflet-control-attribution {
+  display: none !important;
+}
