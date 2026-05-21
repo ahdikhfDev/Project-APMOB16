@@ -1,0 +1,305 @@
+# 🚗 APMOB GPS Tracker — Project APMOB 16
+
+Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan dashboard web **Next.js**, komunikasi **MQTT via HiveMQ Cloud**, dan penyimpanan data **Firebase Realtime Database**.
+
+---
+
+## 📋 Daftar Isi
+
+- [Arsitektur Sistem](#-arsitektur-sistem)
+- [Hardware](#-hardware)
+- [Fitur](#-fitur)
+- [Cara Kerja](#-cara-kerja)
+- [Komponen Kode](#-komponen-kode)
+- [Setup & Instalasi](#-setup--instalasi)
+- [Dashboard Web](#-dashboard-web)
+- [FAQ / Pelajaran](#-faq--pelajaran)
+- [Lisensi](#-lisensi)
+
+---
+
+## 🏗 Arsitektur Sistem
+
+```
+┌──────────────┐     MQTT (TLS 8883)     ┌──────────────┐     Firebase RTDB     ┌──────────────┐
+│   ESP32 +    │ ──────────────────────→ │  HiveMQ Cloud │ ←────────────────── │  Dashboard   │
+│  NEO-6M GPS  │     apmbob/tracker/gps  │   (Broker)   │                     │  Next.js Web │
+│              │                          │              │                     │              │
+│  WiFi atau   │                          │              │                     │ localhost:3000│
+│  SIM800L*    │                          │              │                     │              │
+└──────────────┘                          └──────────────┘                     └──────────────┘
+```
+
+- **ESP32** membaca data GPS via Serial2, mengirim ke HiveMQ Cloud
+- **Dashboard Next.js** subscribe MQTT via WebSocket (port 8884), menampilkan peta & data real-time
+- **Firebase RTDB** menyimpan history data untuk replay dan analisis
+
+> ⚠ *SIM800L masih dalam pengembangan — saat ini fallback ke WiFi*
+
+---
+
+## 🔧 Hardware
+
+| Komponen | Fungsi | Pin ESP32 |
+|----------|--------|-----------|
+| **ESP32 DOIT DEVKIT V1** | Mikrokontroler utama | — |
+| **NEO-6M GPS Module** | Mendapatkan koordinat, kecepatan, heading | RX2=16, TX2=17 |
+| **SIM800L V2** *(opsional)* | Backup komunikasi seluler (GPRS) | RX=26, TX=27, RST=14 |
+
+### Wiring GPS NEO-6M
+
+| NEO-6M | ESP32 |
+|--------|-------|
+| VCC | 3.3V |
+| GND | GND |
+| TX | GPIO16 (RX2) |
+| RX | GPIO17 (TX2) |
+
+> **Catatan:** Baud rate GPS = **9600 bps**. LED NEO-6M berkedip 1 detik saat fix didapat.
+
+### Wiring SIM800L V2 *(jika digunakan)*
+
+| SIM800L | ESP32 |
+|---------|-------|
+| 5VIN | Power bank 5V 2A (bukan dari USB ESP32) |
+| GND | GND |
+| TXD | GPIO26 (Serial1 RX) |
+| RXD | GPIO27 (Serial1 TX) |
+| RST | GPIO14 |
+
+> **Penting:** SIM800L butuh **arus 2A peak**. Power dari USB laptop saja **tidak cukup** — gunakan power bank atau adaptor khusus.
+
+---
+
+## ✨ Fitur
+
+### ✅ Real-time GPS Tracking
+- Posisi (lat/lng), kecepatan (km/h), heading (arah)
+- Update setiap 15 detik (real) / 30 detik (stale/no fix)
+- **Marker mobil** di peta yang bergerak otomatis
+
+### ✅ Detail Satelit
+- **GSV Parsing** — membaca langsung dari NMEA `$GPGSV` 
+- Menampilkan: **PRN**, **elevasi**, **azimuth**, **SNR** (signal strength)
+- 5-level signal bars dengan warna: hijau ≥40dB, kuning 20-40dB, merah <20dB
+
+### ✅ Trail / Jejak Pergerakan
+- **Polyline** putus-putus merah mengikuti semua titik GPS
+- Berubah abu-abu saat sinyal GPS hilang
+
+### ✅ GPS Lost Detection
+- Banner **"GPS LOST"** animasi merah saat satelit hilang
+- Timer **MM:SS** sejak fix terakhir
+- Marker & polyline berubah **abu-abu**
+- Data tetap dikirim dengan `mode: "gps_stale"` (30 detik)
+
+### ✅ MQTT ke HiveMQ Cloud
+- TLS port 8883 (ESP32) / WebSocket port 8884 (dashboard)
+- Auto-reconnect saat WiFi terputus
+
+### ✅ Firebase Realtime Database
+- Semua data GPS otomatis tersimpan di Firebase
+- Path: `apmbob/tracker/{timestamp}`
+- Data siap untuk history & analisis
+
+### ✅ Dashboard Neo-Brutalist
+- Desain border hitam tebal, shadow kotak, warna neon
+- Font Space Grotesk
+- Background dot grid
+
+---
+
+## 🧠 Cara Kerja
+
+### 1. Baca GPS (NEO-6M)
+```
+NEO-6M ──(Serial2, 9600 baud)──→ ESP32
+```
+- ESP32 membaca data NMEA mentah dari Serial2
+- Feed ke **TinyGPSPlus** untuk parsing koordinat, kecepatan, heading
+- Feed ke **GSV Parser** manual untuk detail satelit (PRN, elevasi, SNR)
+
+### 2. Kirim ke MQTT
+```
+ESP32 ──(TLS, port 8883)──→ HiveMQ Cloud
+```
+- Format JSON:
+```json
+{
+  "device": "apmbob-01",
+  "lat": -6.6409,
+  "lng": 106.8553,
+  "speed": 0.8,
+  "heading": 180.0,
+  "sats": 8,
+  "mode": "gps",
+  "satellites": [
+    {"p": 10, "e": 61, "a": 16, "s": 38},
+    {"p": 23, "e": 59, "a": 108, "s": 37}
+  ]
+}
+```
+- `mode: "gps"` = fix valid
+- `mode: "gps_stale"` = fix hilang, data adalah posisi terakhir
+
+### 3. Dashboard Web
+```
+HiveMQ Cloud ──(WebSocket, port 8884)──→ Next.js (browser)
+```
+- Dashboard subscribe ke topic MQTT via WebSocket
+- Update peta Leaflet, marker, polyline, dan sidebar secara real-time
+- Tulis setiap data ke Firebase untuk persistensi
+
+---
+
+## 📁 Komponen Kode
+
+### ESP32 — `Apmbob-Tracker/src/main.cpp`
+| Fungsi | Deskripsi |
+|--------|-----------|
+| `setup()` | Inisialisasi WiFi, MQTT, GPS, SIM800L |
+| `loop()` | Baca GPS, reconnect MQTT, kirim data periodik |
+| `parseGSV()` | Parse manual NMEA `$GPGSV` untuk detail satelit |
+| `buildSatJson()` | Bangun JSON array satelit untuk payload MQTT |
+| `simAtCmd()` | Kirim AT command ke SIM800L, baca response |
+| `simTestBaud()` | Auto-detect baud rate SIM800L |
+
+### Next.js — `apmbob-web/src/app/page.tsx`
+| Bagian | Deskripsi |
+|--------|-----------|
+| `MQTT client` | Koneksi WebSocket ke HiveMQ Cloud, subscribe topic |
+| `Leaflet map` | Map with tile layer, marker, zoom control |
+| `Polyline` | Trail pergerakan (putus-putus, warna berubah saat stale) |
+| `Satellite panel` | Daftar satelit dengan signal bars (dark theme) |
+| `Firebase write` | Dynamic import firebase, write setiap data masuk |
+| `GPS Lost timer` | Interval 1 detik update timer saat sinyal hilang |
+
+### Firebase — `apmbob-web/src/lib/firebase.ts`
+- Init Firebase dengan credentials project
+- Export database instance
+
+---
+
+## 🚀 Setup & Instalasi
+
+### Prasyarat
+- Node.js ≥ 18
+- PlatformIO (VSCode extension)
+- Git
+
+### 1. Clone Repository
+```bash
+git clone https://github.com/ahdikhfDev/Project-APMOB16.git
+cd Project-APMOB16
+```
+
+### 2. ESP32 — Upload Firmware
+1. Buka folder `Apmbob-Tracker` di VSCode (dengan PlatformIO)
+2. Edit `main.cpp` — sesuaikan **SSID WiFi** dan **password**:
+   ```cpp
+   #define WIFI_SSID "NamaWiFi"
+   #define WIFI_PASS "PasswordWiFi"
+   ```
+3. Klik **Upload** (panah kanan bawah) atau:
+   ```bash
+   pio run --target upload
+   ```
+
+### 3. Dashboard Web — Install & Jalankan
+```bash
+cd apmbob-web
+npm install
+npm run dev
+```
+Buka browser di `http://localhost:3000`
+
+### 4. Firebase (optional)
+- Buka `src/lib/firebase.ts` — sudah terisi credentials
+- Buka **Firebase Console** → Realtime Database → Rules:
+  ```json
+  {
+    "rules": {
+      ".read": true,
+      ".write": true
+    }
+  }
+  ```
+
+---
+
+## 🖥 Dashboard Web
+
+### Layout
+- **Sidebar (kiri):** GPS LOST banner, status koneksi, kecepatan, satelit, arah, koordinat, terakhir update
+- **Map (kanan):** Full-screen Leaflet map dengan marker & trail
+
+### Screenshot (deskripsi)
+- Marker pink berbentuk icon mobil
+- Polyline putus-putus merah (jejak pergerakan)
+- Panel satelit dark mode dengan signal bars
+- Banner merah **"GPS LOST"** saat satelit hilang
+
+### Konfigurasi MQTT (jika ingin ganti broker)
+Di `page.tsx`:
+```javascript
+const MQTT_HOST = "wss://broker-anda.hivemq.cloud:8884/mqtt";
+const MQTT_USER = "username";
+const MQTT_PASS = "password";
+const MQTT_TOPIC = "apmbob/tracker/gps";
+```
+
+---
+
+## ❓ FAQ / Pelajaran
+
+### 🔹 GPS NEO-6M — Kenapa susah dapet fix?
+- Butuh **view langit terbuka** (outdoor/teras)
+- Di dalam ruangan dekat jendela masih bisa tapi butuh waktu lebih lama (30-60 detik)
+- **Antena patch** harus menghadap langit — casing logam di atas antena akan menghalangi sinyal
+
+### 🔹 GPS — Kenapa sering ilang & susah balik?
+1. **Cold start lambat** — setelah fix hilang, NEO-6M harus mengunduh ephemeris data ulang
+2. **Power drop** — komponen lain (SIM800L terutama) narik arus besar, voltase GPS bisa turun
+3. **Multipath** — sinyal GPS memantul di gedung tinggi, SNR turun, fix hilang
+
+### 🔹 SIM800L — Kenapa CME ERROR 10?
+Error "SIM not detected" bisa karena:
+- **Power tidak cukup** — SIM800L butuh 2A peak, USB laptop hanya 500mA
+- **SIM card rusak** atau tidak terpasang dengan benar
+- **Konektor SIM longgar**
+
+### 🔹 SIM800L — AT command echo tapi tidak "OK"
+Modul menerima data (TX/RX bener) tapi prosesor GSM tidak boot penuh. Penyebab:
+- **PWRKEY tidak ditarik** — beberapa module butuh PWRKEY dinaikkan ke VDD/3.3V
+- **Arus tidak cukup** — modul hanya cukup untuk echo, tidak untuk boot penuh
+- **Suggested fix:** power bank dedicated 5V 2A, PWRKEY ke VDD
+
+### 🔹 Kecepatan satelit — apa yang memengaruhi?
+- **Jumlah satelit** — minimal 4 untuk fix 3D (posisi + ketinggian)
+- **SNR** — kualitas sinyal (≥40 dB = bagus, ≥30 dB = cukup, <20 dB = lemah)
+- **HDOP** — horizontal dilution of precision (semakin kecil semakin akurat)
+- **Elevasi satelit** — satelit rendah dekat horizon lebih noise
+
+### 🔹 MQTT — Kenapa kadang gagal konek?
+- **Firewall/port blocker** — operator WiFi tertentu memblokir port non-standar (8883 TLS)
+- **DNS tidak ter-resolve** — sambungkan ke WiFi yang stabil
+- **WiFi dengan port 8883 terbuka** diperlukan — coba jaringan rumah/kantor, bukan hotspot HP
+
+### 🔹 Firebase — Permission denied
+- Buka Firebase Console → Realtime Database → Rules
+- Set `.read` dan `.write` ke `true` (development) atau atur autentikasi
+
+### 🔹 Casing & Penempatan GPS
+- **Antena WAJIB di luar casing** — plastik tipis masih tembus, logam tidak
+- **Letakkan di dashboard mobil** (di bawah kaca depan) untuk hasil terbaik
+- **Parkiran basement** — kemungkinan besar kehilangan sinyal
+
+---
+
+## 📄 Lisensi
+
+Proyek ini dibuat untuk keperluan akademik — **Project APMOB 16**.
+
+---
+
+*Dibuat dengan ❤️ oleh Kelompok 16*
