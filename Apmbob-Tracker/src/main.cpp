@@ -3,6 +3,7 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <TinyGPSPlus.h>
+#include <Preferences.h>
 
 #include "secrets.h"
 
@@ -27,6 +28,7 @@ struct SatInfo {
 WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
 TinyGPSPlus gps;
+Preferences prefs;
 
 unsigned long lastMqttTry = 0;
 
@@ -49,7 +51,6 @@ float zoneRadius = 50;
 bool zoneActive = false;
 bool zoneViolated = false;
 bool zoneManualMode = false;
-unsigned long zoneViolatedAt = 0;
 
 void parseGSV(const char* line) {
   // $GPGSV,<total>,<msgNum>,<satInView>,<prn>,<elev>,<azim>,<snr>,...
@@ -169,12 +170,36 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
     Serial.printf("[ZONE] Set: (%.6f,%.6f) r=%.0fm active=%d mode=%s\n",
       zoneCenterLat, zoneCenterLng, zoneRadius, zoneActive, manual ? "manual" : "auto");
+    saveZonePrefs();
   }
   else if (strstr(buf, "\"reset\"")) {
     zoneViolated = false;
     digitalWrite(RELAY_PIN, LOW);
     Serial.println("[ZONE] Reset via MQTT");
   }
+}
+
+void loadZonePrefs() {
+  prefs.begin("zone", true);
+  zoneCenterLat = prefs.getDouble("centerLat", 0.0);
+  zoneCenterLng = prefs.getDouble("centerLng", 0.0);
+  zoneRadius = prefs.getFloat("radius", 50.0);
+  zoneActive = prefs.getBool("active", false);
+  zoneManualMode = prefs.getBool("manual", false);
+  prefs.end();
+  if (zoneRadius != 0) Serial.printf("[NVS] Zone restored: (%.4f,%.4f) r=%.0f active=%d\n",
+    zoneCenterLat, zoneCenterLng, zoneRadius, zoneActive);
+}
+
+void saveZonePrefs() {
+  prefs.begin("zone", false);
+  prefs.putDouble("centerLat", zoneCenterLat);
+  prefs.putDouble("centerLng", zoneCenterLng);
+  prefs.putFloat("radius", zoneRadius);
+  prefs.putBool("active", zoneActive);
+  prefs.putBool("manual", zoneManualMode);
+  prefs.end();
+  Serial.println("[NVS] Zone saved");
 }
 
 void setup() {
@@ -191,6 +216,10 @@ void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW);
   Serial.printf("[RELAY] GPIO %d siap (LOW=AMAN)\n", RELAY_PIN);
+
+  // --- NVS Zone Preferences ---
+  loadZonePrefs();
+  if (zoneActive && zoneViolated) digitalWrite(RELAY_PIN, HIGH);
 
   // --- WiFi ---
   Serial.printf("[WiFi] Menghubungkan ke %s", WIFI_SSID);
@@ -297,19 +326,13 @@ void loop() {
     mqttClient.loop();
   } else if (WiFi.status() == WL_CONNECTED && millis() - lastMqttTry > 10000) {
     lastMqttTry = millis();
-    espClient.setInsecure();
-    IPAddress ip;
-    if (!WiFi.hostByName(MQTT_BROKER, ip)) {
-      Serial.printf("[MQTT] DNS GAGAL\n");
-    } else if (espClient.connect(MQTT_BROKER, MQTT_PORT, 5000)) {
-      mqttClient.setClient(espClient);
-      mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-      mqttClient.setBufferSize(2048);
-      if (mqttClient.connect("apmbob-esp32", MQTT_USER, MQTT_PASS)) {
-        Serial.println("[MQTT] Reconnect OK");
-        mqttClient.setCallback(mqttCallback);
-        mqttClient.subscribe(MQTT_TOPIC_ZONE);
-      }
+    Serial.printf("[MQTT] Reconnect...");
+    if (mqttClient.connect("apmbob-esp32", MQTT_USER, MQTT_PASS)) {
+      Serial.println(" OK");
+      mqttClient.setCallback(mqttCallback);
+      mqttClient.subscribe(MQTT_TOPIC_ZONE);
+    } else {
+      Serial.printf(" GAGAL (rc=%d)\n", mqttClient.state());
     }
   }
 
@@ -346,7 +369,6 @@ void loop() {
       if (dist > zoneRadius) {
         if (!zoneViolated) {
           zoneViolated = true;
-          zoneViolatedAt = millis();
           digitalWrite(RELAY_PIN, HIGH);
           Serial.printf("[ZONE] DILANGGAR! Jarak: %.1fm > %.0fm\n", dist, zoneRadius);
         }
@@ -360,7 +382,7 @@ void loop() {
     }
 
     if (mqttClient.connected()) {
-      char buf[1024];
+      char buf[2048];
       const char* zoneStatus = zoneActive ? (zoneViolated ? "violated" : "safe") : "inactive";
       int pos = snprintf(buf, sizeof(buf),
         "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps\","
@@ -383,7 +405,7 @@ void loop() {
     Serial.printf("[GPS] STALE | Lat: %.6f Lng: %.6f | SINYAL HILANG! sat terlihat: %d\n", lastLat, lastLng, gps.satellites.value());
 
     if (mqttClient.connected()) {
-      char buf[1024];
+      char buf[2048];
       const char* zoneStatus = zoneActive ? (zoneViolated ? "violated" : "safe") : "inactive";
       int pos = snprintf(buf, sizeof(buf),
         "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps_stale\","

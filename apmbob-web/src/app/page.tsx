@@ -33,6 +33,7 @@ interface ZoneData {
   mode: "auto" | "manual";
 }
 
+// Module-level — cached agar Firebase init cuma sekali, bukan per-message
 const firebaseWrite = import("@/lib/firebase").then((fb) => fb).catch(() => null);
 
 let mqttClientId: string | null = null;
@@ -129,7 +130,7 @@ export default function Home() {
             setZoneRadius(data.zone.radius);
             setZoneManualMode(data.zone.mode === "manual");
             if (data.zone.active && data.lat && data.lng) {
-              if (!zoneRef.current.centerLat || !zoneRef.current.centerLng) {
+              if (zoneRef.current.centerLat === null || zoneRef.current.centerLng === null) {
                 setZoneCenterLat(data.lat);
                 setZoneCenterLng(data.lng);
                 zoneRef.current.centerLat = data.lat;
@@ -527,7 +528,9 @@ export default function Home() {
                   setZoneActive(next);
                   if (!next) setZoneStatus("inactive");
                   publishZone({ active: next });
-                  zUpdateMap(zoneCenterLat ?? 0, zoneCenterLng ?? 0, zoneRadius, next, next ? "safe" : "inactive");
+                  if (zoneCenterLat != null && zoneCenterLng != null) {
+                    zUpdateMap(zoneCenterLat, zoneCenterLng, zoneRadius, next, next ? "safe" : "inactive");
+                  }
                 }}
                 className={`flex-1 text-xs font-bold uppercase tracking-wider border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all ${
                   zoneActive ? "bg-[#c6f91f] text-black" : "bg-gray-200 text-black"
@@ -549,7 +552,7 @@ export default function Home() {
                 disabled={!gps}
                 className="text-xs font-bold uppercase tracking-wider bg-[#00e5ff] text-black border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all disabled:opacity-40"
               >
-                <i className="fa-solid fa-crosshars mr-1"></i> Set Posisi
+                <i className="fa-solid fa-crosshairs mr-1"></i> Set Posisi
               </button>
             </div>
 
