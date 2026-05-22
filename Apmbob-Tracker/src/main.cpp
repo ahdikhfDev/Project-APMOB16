@@ -4,8 +4,8 @@
 #include <PubSubClient.h>
 #include <TinyGPSPlus.h>
 
-#define WIFI_SSID "AsepDanSiti"
-#define WIFI_PASS "Sus@hDitebak73"
+#define WIFI_SSID "ciwak"
+#define WIFI_PASS "bentargwcek"
 
 #define MQTT_BROKER "202f37f7e67c4292b30a95877382225e.s1.eu.hivemq.cloud"
 #define MQTT_PORT 8883
@@ -19,6 +19,11 @@
 #define SIM_RX 26
 #define SIM_TX 27
 #define SIM_RST 14
+
+#define SIM800L_DISABLED
+
+#define RELAY_PIN 25
+#define MQTT_TOPIC_ZONE "apmbob/tracker/zone"
 
 #define MAX_SATS 16
 #define LINE_BUF 128
@@ -47,6 +52,15 @@ int gsvAccumCount = 0;
 // NMEA line buffer
 char nmeaBuf[LINE_BUF];
 int nmeaIdx = 0;
+
+// Zone / Geo-fence
+double zoneCenterLat = 0;
+double zoneCenterLng = 0;
+float zoneRadius = 50;
+bool zoneActive = false;
+bool zoneViolated = false;
+bool zoneManualMode = false;
+unsigned long zoneViolatedAt = 0;
 
 String simAtCmd(const char* cmd, unsigned long timeout, bool echo) {
   Serial1.flush();
@@ -154,6 +168,64 @@ void buildSatJson(char* buf, int bufSize) {
   pos += snprintf(buf + pos, bufSize - pos, "]");
 }
 
+float haversineDist(double lat1, double lng1, double lat2, double lng2) {
+  double dLat = (lat2 - lat1) * DEG_TO_RAD;
+  double dLng = (lng2 - lng1) * DEG_TO_RAD;
+  double a = sin(dLat / 2) * sin(dLat / 2) +
+             cos(lat1 * DEG_TO_RAD) * cos(lat2 * DEG_TO_RAD) *
+             sin(dLng / 2) * sin(dLng / 2);
+  double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return 6371000.0 * c;
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int len) {
+  char buf[256];
+  unsigned int copyLen = len < 255 ? len : 255;
+  memcpy(buf, payload, copyLen);
+  buf[copyLen] = '\0';
+
+  if (strcmp(topic, MQTT_TOPIC_ZONE) != 0) return;
+
+  Serial.printf("[MQTT] Zone config: %s\n", buf);
+
+  if (strstr(buf, "\"set_zone\"")) {
+    double lat = 0, lng = 0;
+    float rad = 10;
+    bool act = false;
+    bool manual = false;
+
+    char* p = strstr(buf, "\"centerLat\"");
+    if (p) { p = strchr(p, ':'); if (p) lat = atof(p + 1); }
+    p = strstr(buf, "\"centerLng\"");
+    if (p) { p = strchr(p, ':'); if (p) lng = atof(p + 1); }
+    p = strstr(buf, "\"radius\"");
+    if (p) { p = strchr(p, ':'); if (p) rad = atof(p + 1); }
+    p = strstr(buf, "\"active\"");
+    if (p) { p = strchr(p, ':'); if (p) act = (atoi(p + 1) > 0) || strstr(p + 1, "true"); }
+    p = strstr(buf, "\"mode\"");
+    if (p) { p = strchr(p, ':'); if (p) manual = strstr(p, "\"manual\"") ? true : false; }
+
+    zoneCenterLat = lat;
+    zoneCenterLng = lng;
+    zoneRadius = rad;
+    zoneActive = act;
+    zoneManualMode = manual;
+
+    if (!act) {
+      zoneViolated = false;
+      digitalWrite(RELAY_PIN, LOW);
+    }
+
+    Serial.printf("[ZONE] Set: (%.6f,%.6f) r=%.0fm active=%d mode=%s\n",
+      zoneCenterLat, zoneCenterLng, zoneRadius, zoneActive, manual ? "manual" : "auto");
+  }
+  else if (strstr(buf, "\"reset\"")) {
+    zoneViolated = false;
+    digitalWrite(RELAY_PIN, LOW);
+    Serial.println("[ZONE] Reset via MQTT");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(2000);
@@ -162,6 +234,7 @@ void setup() {
   Serial.println("  Apmbob-Tracker v2.0");
   Serial.println("=========================================\n");
 
+#ifndef SIM800L_DISABLED
   // --- SIM800L ---
   Serial.print("[SIM800L] Reset module...");
   pinMode(SIM_RST, OUTPUT);
@@ -210,6 +283,15 @@ void setup() {
     simAtCmd("AT+CSQ", 2000, true);
   }
   Serial.println();
+#else
+  Serial.println("[SIM800L] Disabled via #define");
+  Serial.println();
+#endif
+
+  // --- Relay GPIO ---
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
+  Serial.printf("[RELAY] GPIO %d siap (LOW=AMAN)\n", RELAY_PIN);
 
   // --- WiFi ---
   Serial.printf("[WiFi] Menghubungkan ke %s", WIFI_SSID);
@@ -239,9 +321,13 @@ void setup() {
       if (espClient.connect(MQTT_BROKER, MQTT_PORT, 5000)) {
         mqttClient.setClient(espClient);
         mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-        mqttClient.setBufferSize(1024);
+        mqttClient.setBufferSize(2048);
         if (mqttClient.connect("apmbob-esp32", MQTT_USER, MQTT_PASS)) {
           Serial.println(" OK");
+          mqttClient.setCallback(mqttCallback);
+          if (mqttClient.subscribe(MQTT_TOPIC_ZONE)) {
+            Serial.printf("[MQTT] Subscribe %s OK\n", MQTT_TOPIC_ZONE);
+          }
         } else {
           Serial.printf(" MQTT GAGAL (rc=%d)\n", mqttClient.state());
         }
@@ -330,9 +416,11 @@ void loop() {
     } else if (espClient.connect(MQTT_BROKER, MQTT_PORT, 5000)) {
       mqttClient.setClient(espClient);
       mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-      mqttClient.setBufferSize(1024);
+      mqttClient.setBufferSize(2048);
       if (mqttClient.connect("apmbob-esp32", MQTT_USER, MQTT_PASS)) {
         Serial.println("[MQTT] Reconnect OK");
+        mqttClient.setCallback(mqttCallback);
+        mqttClient.subscribe(MQTT_TOPIC_ZONE);
       }
     }
   }
@@ -344,7 +432,7 @@ void loop() {
 
   // Kirim tiap 15 detik saat fix, 30 detik saat stale
   static unsigned long lastSend = 0;
-  unsigned long interval = pernahFix && !gps.location.isValid() ? 30000 : 15000;
+  unsigned long interval = pernahFix && !gps.location.isValid() ? 10000 : 5000;
   if (millis() - lastSend < interval) return;
   lastSend = millis();
 
@@ -364,11 +452,33 @@ void loop() {
       }
     }
 
+    // Zone logic
+    if (zoneActive) {
+      float dist = haversineDist(zoneCenterLat, zoneCenterLng, lastLat, lastLng);
+      if (dist > zoneRadius) {
+        if (!zoneViolated) {
+          zoneViolated = true;
+          zoneViolatedAt = millis();
+          digitalWrite(RELAY_PIN, HIGH);
+          Serial.printf("[ZONE] DILANGGAR! Jarak: %.1fm > %.0fm\n", dist, zoneRadius);
+        }
+      } else {
+        if (zoneViolated && !zoneManualMode) {
+          zoneViolated = false;
+          digitalWrite(RELAY_PIN, LOW);
+          Serial.println("[ZONE] Auto reset - kembali ke zona");
+        }
+      }
+    }
+
     if (mqttClient.connected()) {
       char buf[1024];
+      const char* zoneStatus = zoneActive ? (zoneViolated ? "violated" : "safe") : "inactive";
       int pos = snprintf(buf, sizeof(buf),
-        "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps\",",
-        lastLat, lastLng, lastSpd, lastCog, lastSats);
+        "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps\","
+        "\"zone\":{\"status\":\"%s\",\"active\":%d,\"radius\":%.0f,\"mode\":\"%s\"},",
+        lastLat, lastLng, lastSpd, lastCog, lastSats,
+        zoneStatus, zoneActive, zoneRadius, zoneManualMode ? "manual" : "auto");
       buildSatJson(buf + pos, sizeof(buf) - pos);
       int len = strlen(buf);
       if (len < (int)sizeof(buf) - 2) {
@@ -386,9 +496,12 @@ void loop() {
 
     if (mqttClient.connected()) {
       char buf[1024];
+      const char* zoneStatus = zoneActive ? (zoneViolated ? "violated" : "safe") : "inactive";
       int pos = snprintf(buf, sizeof(buf),
-        "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps_stale\",",
-        lastLat, lastLng, lastSpd, lastCog, lastSats);
+        "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps_stale\","
+        "\"zone\":{\"status\":\"%s\",\"active\":%d,\"radius\":%.0f,\"mode\":\"%s\"},",
+        lastLat, lastLng, lastSpd, lastCog, lastSats,
+        zoneStatus, zoneActive, zoneRadius, zoneManualMode ? "manual" : "auto");
       buildSatJson(buf + pos, sizeof(buf) - pos);
       int len = strlen(buf);
       if (len < (int)sizeof(buf) - 2) {

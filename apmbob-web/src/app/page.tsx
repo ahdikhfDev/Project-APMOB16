@@ -6,6 +6,7 @@ const MQTT_HOST = "wss://202f37f7e67c4292b30a95877382225e.s1.eu.hivemq.cloud:888
 const MQTT_USER = "kelompok16";
 const MQTT_PASS = "Kelompok16";
 const MQTT_TOPIC = "apmbob/tracker/gps";
+const MQTT_TOPIC_ZONE = "apmbob/tracker/zone";
 
 interface SatData {
   p: number;
@@ -22,9 +23,28 @@ interface GpsData {
   sats: number;
   mode: string;
   satellites?: SatData[];
+  zone?: ZoneData;
+}
+
+interface ZoneData {
+  status: "safe" | "violated" | "inactive";
+  active: boolean;
+  radius: number;
+  mode: "auto" | "manual";
 }
 
 type L = typeof import("leaflet");
+
+const firebaseWrite = import("@/lib/firebase").then((fb) => fb);
+
+const HAVERSINE_KM = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLng = (lng2 - lng1) * (Math.PI / 180);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const TRAIL_MAX = 200;
 
 export default function Home() {
   const [gps, setGps] = useState<GpsData | null>(null);
@@ -32,28 +52,44 @@ export default function Home() {
   const [gpsLostSec, setGpsLostSec] = useState(0);
   const [status, setStatus] = useState<"disconnected" | "connecting" | "connected">("disconnected");
   const [lastUpdate, setLastUpdate] = useState<string>("-");
+  const [trailCount, setTrailCount] = useState(0);
+  const [zoneCenterLat, setZoneCenterLat] = useState<number | null>(null);
+  const [zoneCenterLng, setZoneCenterLng] = useState<number | null>(null);
+  const [zoneRadius, setZoneRadius] = useState(50);
+  const [zoneActive, setZoneActive] = useState(false);
+  const [zoneManualMode, setZoneManualMode] = useState(false);
+  const [zoneStatus, setZoneStatus] = useState<"safe" | "violated" | "inactive">("inactive");
   const lastFixTime = useRef<number>(Date.now());
+  const trailRefs = useRef<any>({ polyline: null, glowLine: null, startMarker: null, map: null, points: [] });
+  const zoneRef = useRef({ L: null as any, circle: null as any, radius: 50, centerLat: null as number | null, centerLng: null as number | null, active: false, status: "inactive" });
+  const mqttRef = useRef<any>(null);
 
   useEffect(() => {
     Promise.all([import("leaflet"), import("mqtt")]).then(([leaf, mq]) => {
       const L = leaf.default;
       const mqtt = mq.default;
 
+      const tr = trailRefs.current;
       const map = L.map("map", { zoomControl: false }).setView([-6.4025, 106.7942], 14);
+      tr.map = map;
       L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
         maxZoom: 19,
       }).addTo(map);
       L.control.zoom({ position: "bottomright" }).addTo(map);
-
-      let polyline: L.Polyline | null = null;
+      let polyline: L.Polyline | null = tr.polyline;
+      let glowLine: L.Polyline | null = tr.glowLine;
       let markerRef: L.Marker | null = null;
-      const trailPoints: [number, number][] = [];
+      let startMarker: L.Marker | null = tr.startMarker;
+      const trailPoints: [number, number][] = tr.points;
+
+      zoneRef.current.L = L;
 
       const client = mqtt.connect(MQTT_HOST, {
         username: MQTT_USER,
         password: MQTT_PASS,
         clientId: "web-" + Math.random().toString(16).substring(2, 10),
       });
+      mqttRef.current = client;
 
       client.on("connect", () => setStatus("connected"));
       client.on("reconnect", () => setStatus("connecting"));
@@ -75,8 +111,22 @@ export default function Home() {
           setGpsLost(isStale);
           if (!isStale) lastFixTime.current = Date.now();
 
-          // Write to Firebase RTDB
-          import("@/lib/firebase").then((fb) => {
+          // Zone status dari ESP32
+          if (data.zone) {
+            setZoneStatus(data.zone.status);
+            setZoneActive(data.zone.active);
+            setZoneRadius(data.zone.radius);
+            setZoneManualMode(data.zone.mode === "manual");
+            if (data.zone.active && data.lat && data.lng) {
+              if (!zoneCenterLat || !zoneCenterLng) {
+                setZoneCenterLat(data.lat);
+                setZoneCenterLng(data.lng);
+              }
+            }
+          }
+
+          // Write to Firebase RTDB (cache import)
+          firebaseWrite.then((fb) => {
             const now = new Date();
             const ts = `${now.getTime()}`;
             const path = `apmbob/tracker/${ts}`;
@@ -94,28 +144,85 @@ export default function Home() {
           if (data.lat && data.lng) {
             const latlng: [number, number] = [data.lat, data.lng];
 
-            if (!isStale) trailPoints.push(latlng);
-
             const markerColor = isStale ? "#888" : "#ff3366";
-            const polyColor = isStale ? "#888" : "#ff3366";
 
-            if (!polyline) {
-              polyline = L.polyline(trailPoints, {
-                color: polyColor,
-                weight: 4,
-                opacity: isStale ? 0.4 : 0.8,
-                dashArray: "10, 8",
-              }).addTo(map);
+            if (!isStale) {
+              const isFirst = trailPoints.length === 0;
+              let shouldAddTrail = true;
+              if (!isFirst) {
+                const lastPt = trailPoints[trailPoints.length - 1];
+                if (lastPt) {
+                  const d = HAVERSINE_KM(lastPt[0], lastPt[1], latlng[0], latlng[1]) * 1000;
+                  if (d < 3) shouldAddTrail = false;
+                }
+              }
+              if (shouldAddTrail) {
+                trailPoints.push(latlng);
+                if (trailPoints.length > TRAIL_MAX) {
+                  const decimated: [number, number][] = [];
+                  for (let i = 0; i < trailPoints.length; i += 2) decimated.push(trailPoints[i]);
+                  trailPoints.length = 0;
+                  trailPoints.push(...decimated);
+                }
+                setTrailCount(trailPoints.length);
+              }
+
+              // Glow trail (outer)
+              if (!glowLine) {
+                glowLine = L.polyline(trailPoints, {
+                  color: "#c6f91f",
+                  weight: 10,
+                  opacity: 0.25,
+                  lineCap: "round",
+                  lineJoin: "round",
+                }).addTo(map);
+                tr.glowLine = glowLine;
+              } else {
+                glowLine.setLatLngs(trailPoints);
+              }
+
+              // Main trail (inner)
+              if (!polyline) {
+                polyline = L.polyline(trailPoints, {
+                  color: "#ffdb00",
+                  weight: 4,
+                  opacity: 0.95,
+                  lineCap: "round",
+                  lineJoin: "round",
+                }).addTo(map);
+                tr.polyline = polyline;
+              } else {
+                polyline.setLatLngs(trailPoints);
+              }
+
+              // Start marker (first point)
+              if (isFirst) {
+                const startIcon = L.divIcon({
+                  className: "",
+                  html: `<div style="background:#00e5ff;width:14px;height:14px;border:3px solid white;border-radius:50%;box-shadow:0 0 0 3px #00e5ff"></div>`,
+                  iconSize: [14, 14],
+                  iconAnchor: [7, 7],
+                });
+                startMarker = L.marker(latlng, { icon: startIcon }).addTo(map);
+                tr.startMarker = startMarker;
+              }
+            }
+
+            if (isStale && trailPoints.length > 0) {
+              // Still show trail but faded
+              const fadeColor = "#888";
+              if (polyline) polyline.setStyle({ color: fadeColor, opacity: 0.4 });
+              if (glowLine) glowLine.setStyle({ color: fadeColor, opacity: 0.1 });
             } else {
-              polyline.setStyle({ color: polyColor, opacity: isStale ? 0.4 : 0.8 });
-              polyline.setLatLngs(trailPoints);
+              if (polyline) polyline.setStyle({ color: "#ffdb00", opacity: 0.95 });
+              if (glowLine) glowLine.setStyle({ color: "#c6f91f", opacity: 0.25 });
             }
 
             const icon = L.divIcon({
               className: "",
-              html: `<div class="car-marker" style="background:${markerColor}"><i class="fa-solid fa-car-side"></i></div>`,
-              iconSize: [40, 40],
-              iconAnchor: [20, 20],
+              html: `<div class="map-pin" style="background:${markerColor}"><i class="fa-solid fa-location-dot"></i></div>`,
+              iconSize: [22, 22],
+              iconAnchor: [11, 22],
             });
 
             if (!markerRef) {
@@ -126,6 +233,22 @@ export default function Home() {
             }
 
             if (!isStale) map.panTo(latlng);
+          }
+
+          // Zone circle (via ref biar realtime)
+          const zr = zoneRef.current;
+          if (zr.circle) {
+            if (data.zone?.active && zoneCenterLat && zoneCenterLng) {
+              zr.circle.setLatLng([zoneCenterLat, zoneCenterLng]);
+              zr.circle.setRadius(data.zone.radius);
+              zr.circle.setStyle({
+                color: data.zone.status === "violated" ? "#ff0000" : "#00e5ff",
+                fillColor: data.zone.status === "violated" ? "#ff4d4d" : "#c6f91f",
+              });
+            } else {
+              map.removeLayer(zr.circle);
+              zr.circle = null;
+            }
           }
         } catch (e) {
           console.error("Parse error", e);
@@ -140,10 +263,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!gpsLost) return;
     const timer = setInterval(() => {
-      if (gpsLost) {
-        setGpsLostSec(Math.floor((Date.now() - lastFixTime.current) / 1000));
-      }
+      setGpsLostSec(Math.floor((Date.now() - lastFixTime.current) / 1000));
     }, 1000);
     return () => clearInterval(timer);
   }, [gpsLost]);
@@ -163,6 +285,53 @@ export default function Home() {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  // Sync zone state ke ref (biar gak stale closure)
+  zoneRef.current.radius = zoneRadius;
+  zoneRef.current.centerLat = zoneCenterLat;
+  zoneRef.current.centerLng = zoneCenterLng;
+  zoneRef.current.active = zoneActive;
+  zoneRef.current.status = zoneStatus;
+
+  const zUpdateMap = (lat: number, lng: number, rad: number, act: boolean, stat: string) => {
+    const zr = zoneRef.current;
+    const map = trailRefs.current.map;
+    if (!zr.L || !map) return;
+    if (act && lat && lng) {
+      const isViolated = stat === "violated";
+      if (!zr.circle) {
+        zr.circle = zr.L.circle([lat, lng], {
+          radius: rad,
+          color: isViolated ? "#ff0000" : "#00e5ff",
+          fillColor: isViolated ? "#ff4d4d" : "#c6f91f",
+          fillOpacity: 0.2,
+          weight: 4,
+          dashArray: "10, 8",
+        }).addTo(map);
+      } else {
+        zr.circle.setLatLng([lat, lng]);
+        zr.circle.setRadius(rad);
+        zr.circle.setStyle({ color: isViolated ? "#ff0000" : "#00e5ff", fillColor: isViolated ? "#ff4d4d" : "#c6f91f" });
+      }
+    } else if (zr.circle) {
+      map.removeLayer(zr.circle);
+      zr.circle = null;
+    }
+  };
+
+  const publishZone = (overrides?: Record<string, any>) => {
+    const zr = zoneRef.current;
+    const lat = overrides?.centerLat ?? zr.centerLat ?? gps?.lat ?? 0;
+    const lng = overrides?.centerLng ?? zr.centerLng ?? gps?.lng ?? 0;
+    const rad = overrides?.radius ?? zr.radius;
+    const act = overrides?.active ?? zr.active;
+    const mode = overrides?.mode ?? (zoneManualMode ? "manual" : "auto");
+    const action = overrides?.action ?? "set_zone";
+    const payload = JSON.stringify({ action, centerLat: lat, centerLng: lng, radius: rad, active: act, mode });
+    if (mqttRef.current?.connected) {
+      mqttRef.current.publish(MQTT_TOPIC_ZONE, payload);
+    }
   };
 
   return (
@@ -322,6 +491,161 @@ export default function Home() {
               </div>
             </div>
           </div>
+
+          {/* ZONA KEAMANAN */}
+          <div className="col-span-2 neo-card neo-shadow bg-white p-4">
+            <div className="flex items-center gap-2 mb-3 border-b-2 border-black pb-2">
+              <i className="fa-solid fa-shield-halved text-black"></i>
+              <p className="text-black text-sm font-bold uppercase">Zona Keamanan</p>
+              <span
+                className={`ml-auto text-[10px] font-bold uppercase px-2 py-0.5 border-2 border-black rounded ${
+                  zoneStatus === "safe" ? "bg-[#c6f91f] text-black" :
+                  zoneStatus === "violated" ? "bg-[#ff4d4d] text-black animate-pulse" :
+                  "bg-gray-300 text-black"
+                }`}
+              >
+                {zoneStatus === "safe" ? "AMAN" : zoneStatus === "violated" ? "DILANGGAR!" : "NONAKTIF"}
+              </span>
+            </div>
+
+            {/* ON/OFF Toggle */}
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => {
+                  const next = !zoneActive;
+                  setZoneActive(next);
+                  if (!next) setZoneStatus("inactive");
+                  publishZone({ active: next });
+                  zUpdateMap(zoneCenterLat ?? 0, zoneCenterLng ?? 0, zoneRadius, next, next ? "safe" : "inactive");
+                }}
+                className={`flex-1 text-xs font-bold uppercase tracking-wider border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all ${
+                  zoneActive ? "bg-[#c6f91f] text-black" : "bg-gray-200 text-black"
+                }`}
+              >
+                <i className={`fa-solid ${zoneActive ? "fa-toggle-on" : "fa-toggle-off"} mr-1`}></i>
+                {zoneActive ? "AKTIF" : "NONAKTIF"}
+              </button>
+              <button
+                onClick={() => {
+                  const zr = zoneRef.current;
+                  if (gps?.lat && gps?.lng) {
+                    setZoneCenterLat(gps.lat);
+                    setZoneCenterLng(gps.lng);
+                    zUpdateMap(gps.lat, gps.lng, zr.radius, zr.active, zr.status);
+                    publishZone({ centerLat: gps.lat, centerLng: gps.lng });
+                  }
+                }}
+                disabled={!gps}
+                className="text-xs font-bold uppercase tracking-wider bg-[#00e5ff] text-black border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all disabled:opacity-40"
+              >
+                <i className="fa-solid fa-crosshars mr-1"></i> Set Posisi
+              </button>
+            </div>
+
+            {/* Radius slider */}
+            <div className="mb-3">
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[10px] font-bold uppercase text-black">Radius</span>
+                <span className="text-lg font-extrabold text-black font-mono">{zoneRadius}m</span>
+              </div>
+              <input
+                type="range"
+                min={5}
+                max={500}
+                value={zoneRadius}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setZoneRadius(v);
+                  const zr = zoneRef.current;
+                  zUpdateMap(zr.centerLat ?? 0, zr.centerLng ?? 0, v, zr.active, zr.status);
+                }}
+                onMouseUp={() => {
+                  const zr = zoneRef.current;
+                  publishZone({ radius: zr.radius });
+                }}
+                onTouchEnd={() => {
+                  const zr = zoneRef.current;
+                  publishZone({ radius: zr.radius });
+                }}
+                className="w-full h-2 border-2 border-black rounded appearance-none cursor-pointer"
+                style={{ accentColor: "#c6f91f" }}
+              />
+              <div className="flex justify-between text-[9px] font-bold text-gray-500 mt-0.5">
+                <span>5m</span><span>250m</span><span>500m</span>
+              </div>
+            </div>
+
+            {/* Mode: Auto / Manual */}
+            <div className="flex gap-2 mb-3">
+              {["auto", "manual"].map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => {
+                    setZoneManualMode(mode === "manual");
+                    publishZone({ mode });
+                  }}
+                  className={`flex-1 text-[10px] font-bold uppercase tracking-wider border-2 border-black rounded px-2 py-1.5 transition-all ${
+                    (mode === "manual" ? zoneManualMode : !zoneManualMode)
+                      ? "bg-black text-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                      : "bg-gray-100 text-black"
+                  }`}
+                >
+                  {mode === "auto" ? "⚡ Otomatis" : "✋ Manual"}
+                </button>
+              ))}
+            </div>
+
+            {/* Reset button (manual mode, violated) */}
+            {zoneManualMode && zoneStatus === "violated" && (
+              <button
+                onClick={() => {
+                  publishZone({ action: "reset" });
+                  const zr = zoneRef.current;
+                  zUpdateMap(zr.centerLat ?? 0, zr.centerLng ?? 0, zr.radius, true, "safe");
+                  setZoneStatus("safe");
+                }}
+                className="w-full text-[10px] font-bold uppercase tracking-wider bg-[#ffdb00] text-black border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all"
+              >
+                <i className="fa-solid fa-arrow-rotate-left mr-1"></i> Reset Zona
+              </button>
+            )}
+
+            {zoneCenterLat != null && zoneCenterLng != null && (
+              <div className="mt-2 flex flex-col gap-1 bg-gray-50 border-2 border-black rounded p-2 text-[10px]">
+                <div className="flex justify-between">
+                  <span className="font-bold">PUSAT</span>
+                  <span className="font-mono font-bold">{zoneCenterLat.toFixed(4)}, {zoneCenterLng.toFixed(4)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* TRAIL STATS */}
+          {trailCount > 0 && (
+            <div className="neo-card neo-shadow bg-white p-4">
+              <div className="flex items-center gap-2 mb-2 border-b-2 border-black pb-2">
+                <i className="fa-solid fa-route text-black"></i>
+                <p className="text-black text-sm font-bold uppercase">Jejak Pergerakan</p>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold bg-black text-white px-2 py-1 rounded">TITIK</span>
+                <span className="font-extrabold text-2xl text-black font-mono tracking-tighter">{trailCount}</span>
+              </div>
+              <button
+                onClick={() => {
+                  const t = trailRefs.current;
+                  if (t.polyline) { t.polyline.setLatLngs([]); t.map?.removeLayer(t.polyline); t.polyline = null; }
+                  if (t.glowLine) { t.glowLine.setLatLngs([]); t.map?.removeLayer(t.glowLine); t.glowLine = null; }
+                  if (t.startMarker) { t.map?.removeLayer(t.startMarker); t.startMarker = null; }
+                  t.points.length = 0;
+                  setTrailCount(0);
+                }}
+                className="mt-3 w-full text-[10px] font-bold uppercase tracking-wider bg-[#ff4d4d] text-black border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all"
+              >
+                <i className="fa-solid fa-eraser mr-1"></i> Hapus Jejak
+              </button>
+            </div>
+          )}
 
           <div className="col-span-2 text-center mt-2 p-2 border-2 border-black border-dashed rounded bg-white">
             <p className="text-xs font-bold uppercase text-black">
