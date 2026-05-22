@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const MQTT_HOST = "wss://202f37f7e67c4292b30a95877382225e.s1.eu.hivemq.cloud:8884/mqtt";
-const MQTT_USER = "kelompok16";
-const MQTT_PASS = "Kelompok16";
-const MQTT_TOPIC = "apmbob/tracker/gps";
-const MQTT_TOPIC_ZONE = "apmbob/tracker/zone";
+const MQTT_HOST = process.env.NEXT_PUBLIC_MQTT_HOST!;
+const MQTT_USER = process.env.NEXT_PUBLIC_MQTT_USER!;
+const MQTT_PASS = process.env.NEXT_PUBLIC_MQTT_PASS!;
+const MQTT_TOPIC = process.env.NEXT_PUBLIC_MQTT_TOPIC!;
+const MQTT_TOPIC_ZONE = process.env.NEXT_PUBLIC_MQTT_TOPIC_ZONE!;
 
 interface SatData {
   p: number;
@@ -33,9 +33,20 @@ interface ZoneData {
   mode: "auto" | "manual";
 }
 
-type L = typeof import("leaflet");
+const firebaseWrite = import("@/lib/firebase").then((fb) => fb).catch(() => null);
 
-const firebaseWrite = import("@/lib/firebase").then((fb) => fb);
+let mqttClientId: string | null = null;
+const getMqttClientId = () => {
+  if (typeof window === "undefined") return "web-dashboard";
+  if (!mqttClientId) {
+    mqttClientId = localStorage.getItem("mqttClientId");
+    if (!mqttClientId) {
+      mqttClientId = "web-" + Math.random().toString(36).substring(2, 10);
+      localStorage.setItem("mqttClientId", mqttClientId);
+    }
+  }
+  return mqttClientId;
+};
 
 const HAVERSINE_KM = (lat1: number, lng1: number, lat2: number, lng2: number) => {
   const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -87,7 +98,7 @@ export default function Home() {
       const client = mqtt.connect(MQTT_HOST, {
         username: MQTT_USER,
         password: MQTT_PASS,
-        clientId: "web-" + Math.random().toString(16).substring(2, 10),
+        clientId: getMqttClientId(),
       });
       mqttRef.current = client;
 
@@ -118,19 +129,19 @@ export default function Home() {
             setZoneRadius(data.zone.radius);
             setZoneManualMode(data.zone.mode === "manual");
             if (data.zone.active && data.lat && data.lng) {
-              if (!zoneCenterLat || !zoneCenterLng) {
+              if (!zoneRef.current.centerLat || !zoneRef.current.centerLng) {
                 setZoneCenterLat(data.lat);
                 setZoneCenterLng(data.lng);
+                zoneRef.current.centerLat = data.lat;
+                zoneRef.current.centerLng = data.lng;
               }
             }
           }
 
-          // Write to Firebase RTDB (cache import)
+          // Write to Firebase RTDB — latest always, history max once per menit
           firebaseWrite.then((fb) => {
-            const now = new Date();
-            const ts = `${now.getTime()}`;
-            const path = `apmbob/tracker/${ts}`;
-            fb.set(fb.ref(fb.db, path), {
+            if (!fb) return;
+            fb.set(fb.ref(fb.db, "apmbob/tracker/latest"), {
               lat: data.lat,
               lng: data.lng,
               speed: data.speed,
@@ -238,8 +249,8 @@ export default function Home() {
           // Zone circle (via ref biar realtime)
           const zr = zoneRef.current;
           if (zr.circle) {
-            if (data.zone?.active && zoneCenterLat && zoneCenterLng) {
-              zr.circle.setLatLng([zoneCenterLat, zoneCenterLng]);
+            if (data.zone?.active && zr.centerLat && zr.centerLng) {
+              zr.circle.setLatLng([zr.centerLat, zr.centerLng]);
               zr.circle.setRadius(data.zone.radius);
               zr.circle.setStyle({
                 color: data.zone.status === "violated" ? "#ff0000" : "#00e5ff",

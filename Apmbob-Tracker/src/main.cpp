@@ -4,23 +4,12 @@
 #include <PubSubClient.h>
 #include <TinyGPSPlus.h>
 
-#define WIFI_SSID "ciwak"
-#define WIFI_PASS "bentargwcek"
+#include "secrets.h"
 
-#define MQTT_BROKER "202f37f7e67c4292b30a95877382225e.s1.eu.hivemq.cloud"
-#define MQTT_PORT 8883
-#define MQTT_USER "kelompok16"
-#define MQTT_PASS "Kelompok16"
 #define MQTT_TOPIC "apmbob/tracker/gps"
 
 #define GPS_RX 16
 #define GPS_TX 17
-
-#define SIM_RX 26
-#define SIM_TX 27
-#define SIM_RST 14
-
-#define SIM800L_DISABLED
 
 #define RELAY_PIN 25
 #define MQTT_TOPIC_ZONE "apmbob/tracker/zone"
@@ -61,44 +50,6 @@ bool zoneActive = false;
 bool zoneViolated = false;
 bool zoneManualMode = false;
 unsigned long zoneViolatedAt = 0;
-
-String simAtCmd(const char* cmd, unsigned long timeout, bool echo) {
-  Serial1.flush();
-  while (Serial1.available()) Serial1.read();
-  Serial1.println(cmd);
-  String resp = "";
-  unsigned long t = millis() + timeout;
-  while (millis() < t) {
-    while (Serial1.available()) {
-      char c = Serial1.read();
-      resp += c;
-    }
-    if (resp.indexOf("OK") >= 0 || resp.indexOf("ERROR") >= 0) break;
-  }
-  if (echo) {
-    Serial.print("  >>> raw: ");
-    for (int i = 0; i < resp.length(); i++) {
-      char c = resp[i];
-      if (c == '\r') Serial.print("\\r");
-      else if (c == '\n') Serial.print("\\n");
-      else Serial.print(c);
-    }
-    Serial.println();
-  }
-  return resp;
-}
-
-bool simTestBaud(int baud) {
-  Serial1.begin(baud, SERIAL_8N1, SIM_RX, SIM_TX);
-  delay(300);
-  String r = simAtCmd("AT", 2000, true);
-  if (r.indexOf("OK") >= 0) {
-    Serial.printf("[SIM800L] Baud OK: %d\n", baud);
-    return true;
-  }
-  Serial1.end();
-  return false;
-}
 
 void parseGSV(const char* line) {
   // $GPGSV,<total>,<msgNum>,<satInView>,<prn>,<elev>,<azim>,<snr>,...
@@ -234,59 +185,7 @@ void setup() {
   Serial.println("  Apmbob-Tracker v2.0");
   Serial.println("=========================================\n");
 
-#ifndef SIM800L_DISABLED
-  // --- SIM800L ---
-  Serial.print("[SIM800L] Reset module...");
-  pinMode(SIM_RST, OUTPUT);
-  digitalWrite(SIM_RST, LOW);
-  delay(500);
-  digitalWrite(SIM_RST, HIGH);
-  delay(5000);
-  Serial.println(" OK");
 
-  Serial.println("[SIM800L] Cek baud 9600...");
-  bool simOk = simTestBaud(9600);
-
-  if (!simOk) {
-    Serial.println("[SIM800L] Cek baud 115200...");
-    simOk = simTestBaud(115200);
-  }
-  if (!simOk) {
-    Serial.println("[SIM800L] Cek baud 57600...");
-    simOk = simTestBaud(57600);
-  }
-
-  if (simOk) {
-    Serial.println("[SIM800L] Module merespons!");
-  } else {
-    Serial.println("[SIM800L] Tidak ada respons - cek wiring/power");
-    Serial.println("[SIM800L] Pastikan 5VIN dapat power 2A dan RX/TX cross-connected");
-    Serial.println("[SIM800L] Coba: TX(ESP27) -> RX(SIM), RX(ESP26) -> TX(SIM)");
-  }
-
-  if (simOk) {
-    Serial.print("[SIM800L] AT+CCID... ");
-    String r = simAtCmd("AT+CCID", 3000, true);
-    if (r.indexOf("+CCID") >= 0) {
-      int start = r.indexOf("+CCID: ");
-      int end = r.indexOf("\r", start);
-      if (start >= 0 && end > start) {
-        String iccid = r.substring(start + 7, end);
-        iccid.trim();
-        Serial.printf("[SIM800L] SIM TERDETEKSI! ICCID: %s\n", iccid.c_str());
-      }
-    } else {
-      Serial.println("[SIM800L] CME ERROR / SIM tidak terbaca - fallback ke WiFi");
-    }
-
-    Serial.print("[SIM800L] AT+CSQ... ");
-    simAtCmd("AT+CSQ", 2000, true);
-  }
-  Serial.println();
-#else
-  Serial.println("[SIM800L] Disabled via #define");
-  Serial.println();
-#endif
 
   // --- Relay GPIO ---
   pinMode(RELAY_PIN, OUTPUT);
@@ -312,29 +211,18 @@ void setup() {
   // --- MQTT ---
   if (WiFi.status() == WL_CONNECTED) {
     espClient.setInsecure();
-    IPAddress ip;
-    if (!WiFi.hostByName(MQTT_BROKER, ip)) {
-      Serial.printf("\n[MQTT] DNS GAGAL - %s tidak bisa diresolve\n", MQTT_BROKER);
-    } else {
-      Serial.printf("\n[MQTT] DNS OK -> %s\n", ip.toString().c_str());
-      Serial.printf("[MQTT] Konek ke %s:%d (timeout 5s)...", MQTT_BROKER, MQTT_PORT);
-      if (espClient.connect(MQTT_BROKER, MQTT_PORT, 5000)) {
-        mqttClient.setClient(espClient);
-        mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-        mqttClient.setBufferSize(2048);
-        if (mqttClient.connect("apmbob-esp32", MQTT_USER, MQTT_PASS)) {
-          Serial.println(" OK");
-          mqttClient.setCallback(mqttCallback);
-          if (mqttClient.subscribe(MQTT_TOPIC_ZONE)) {
-            Serial.printf("[MQTT] Subscribe %s OK\n", MQTT_TOPIC_ZONE);
-          }
-        } else {
-          Serial.printf(" MQTT GAGAL (rc=%d)\n", mqttClient.state());
-        }
-      } else {
-        int err = espClient.lastError(NULL, 0);
-        Serial.printf(" TLS GAGAL (err=%d)\n", err);
+    mqttClient.setClient(espClient);
+    mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+    mqttClient.setBufferSize(2048);
+    Serial.printf("\n[MQTT] Konek ke %s:%d...", MQTT_BROKER, MQTT_PORT);
+    if (mqttClient.connect("apmbob-esp32", MQTT_USER, MQTT_PASS)) {
+      Serial.println(" OK");
+      mqttClient.setCallback(mqttCallback);
+      if (mqttClient.subscribe(MQTT_TOPIC_ZONE)) {
+        Serial.printf("[MQTT] Subscribe %s OK\n", MQTT_TOPIC_ZONE);
       }
+    } else {
+      Serial.printf(" MQTT GAGAL (rc=%d)\n", mqttClient.state());
     }
   }
 
@@ -430,7 +318,7 @@ void loop() {
   static int lastSats = 0;
   static bool pernahFix = false;
 
-  // Kirim tiap 15 detik saat fix, 30 detik saat stale
+  // Kirim tiap 5 detik saat fix, 10 detik saat stale
   static unsigned long lastSend = 0;
   unsigned long interval = pernahFix && !gps.location.isValid() ? 10000 : 5000;
   if (millis() - lastSend < interval) return;

@@ -2,13 +2,13 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, set } from "firebase/database";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCcDIVP9bles3_gjOk8upHXU7-U6Eh6QDE",
-  authDomain: "kelompok16-aff05.firebaseapp.com",
-  databaseURL: "https://kelompok16-aff05-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "kelompok16-aff05",
-  storageBucket: "kelompok16-aff05.firebasestorage.app",
-  messagingSenderId: "474876779233",
-  appId: "1:474876779233:web:32efcb3e7633adcc4c75a0",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DB_URL,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
