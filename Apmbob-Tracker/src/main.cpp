@@ -168,7 +168,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
     if (!act) {
       zoneViolated = false;
-      digitalWrite(RELAY_PIN, LOW);
+      digitalWrite(RELAY_PIN, HIGH);
     }
 
     Serial.printf("[ZONE] Set: (%.6f,%.6f) r=%.0fm active=%d mode=%s\n",
@@ -177,7 +177,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
   }
   else if (strstr(buf, "\"reset\"")) {
     zoneViolated = false;
-    digitalWrite(RELAY_PIN, LOW);
+    digitalWrite(RELAY_PIN, HIGH);
     Serial.println("[ZONE] Reset via MQTT");
   }
 }
@@ -217,12 +217,12 @@ void setup() {
 
   // --- Relay GPIO ---
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);
-  Serial.printf("[RELAY] GPIO %d siap (LOW=AMAN)\n", RELAY_PIN);
+  digitalWrite(RELAY_PIN, HIGH);
+  Serial.printf("[RELAY] GPIO %d siap (HIGH=AMAN)\n", RELAY_PIN);
 
   // --- NVS Zone Preferences ---
   loadZonePrefs();
-  if (zoneActive && zoneViolated) digitalWrite(RELAY_PIN, HIGH);
+  if (zoneActive && zoneViolated) digitalWrite(RELAY_PIN, LOW);
 
   // --- WiFi ---
   Serial.printf("[WiFi] Menghubungkan ke %s", WIFI_SSID);
@@ -372,13 +372,13 @@ void loop() {
       if (dist > zoneRadius) {
         if (!zoneViolated) {
           zoneViolated = true;
-          digitalWrite(RELAY_PIN, HIGH);
+          digitalWrite(RELAY_PIN, LOW);
           Serial.printf("[ZONE] DILANGGAR! Jarak: %.1fm > %.0fm\n", dist, zoneRadius);
         }
       } else {
         if (zoneViolated && !zoneManualMode) {
           zoneViolated = false;
-          digitalWrite(RELAY_PIN, LOW);
+          digitalWrite(RELAY_PIN, HIGH);
           Serial.println("[ZONE] Auto reset - kembali ke zona");
         }
       }
