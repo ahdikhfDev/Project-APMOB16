@@ -130,6 +130,9 @@ float haversineDist(double lat1, double lng1, double lat2, double lng2) {
   return 6371000.0 * c;
 }
 
+void loadZonePrefs();
+void saveZonePrefs();
+
 void mqttCallback(char* topic, byte* payload, unsigned int len) {
   char buf[256];
   unsigned int copyLen = len < 255 ? len : 255;
