@@ -81,6 +81,8 @@ export default function Home() {
   const zoneRef = useRef({ L: null as any, circle: null as any, radius: 50, centerLat: null as number | null, centerLng: null as number | null, active: false, status: "inactive" });
   const mqttRef = useRef<any>(null);
   const mapInited = useRef(false);
+  const stableLatlng = useRef<[number, number] | null>(null);
+  const MOVEMENT_THRESHOLD_M = 10; // GPS noise filter (NEO-6M ~2.5m accuracy)
 
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
@@ -168,18 +170,14 @@ export default function Home() {
           if (data.lat && data.lng) {
             const latlng: [number, number] = [data.lat, data.lng];
 
+            // GPS noise filter — skip update if pergerakan < threshold
+            const isMoved = stableLatlng.current === null || HAVERSINE_KM(stableLatlng.current[0], stableLatlng.current[1], latlng[0], latlng[1]) * 1000 >= MOVEMENT_THRESHOLD_M;
+
             const markerColor = isStale ? "#888" : "#ff3366";
 
             if (!isStale) {
               const isFirst = trailPoints.length === 0;
-              let shouldAddTrail = true;
-              if (!isFirst) {
-                const lastPt = trailPoints[trailPoints.length - 1];
-                if (lastPt) {
-                  const d = HAVERSINE_KM(lastPt[0], lastPt[1], latlng[0], latlng[1]) * 1000;
-                  if (d < 3) shouldAddTrail = false;
-                }
-              }
+              let shouldAddTrail = isFirst || isMoved;
               if (shouldAddTrail) {
                 trailPoints.push(latlng);
                 if (trailPoints.length > TRAIL_MAX) {
@@ -251,12 +249,16 @@ export default function Home() {
 
             if (!markerRef) {
               markerRef = L.marker(latlng, { icon }).addTo(map);
+              stableLatlng.current = latlng;
             } else {
               markerRef.setIcon(icon);
-              markerRef.setLatLng(latlng);
+              if (isMoved) {
+                markerRef.setLatLng(latlng);
+                stableLatlng.current = latlng;
+              }
             }
 
-            if (!isStale) map.panTo(latlng);
+            if (!isStale && isMoved) map.panTo(latlng);
           }
 
           // Zone circle (via ref biar realtime)
