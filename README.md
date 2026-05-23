@@ -22,20 +22,20 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 ## 🏗 Arsitektur Sistem
 
 ```
-┌──────────────┐     MQTT (TLS 8883)     ┌──────────────┐     Firebase RTDB     ┌──────────────┐
-│   ESP32 +    │ ──────────────────────→ │  HiveMQ Cloud │ ←────────────────── │  Dashboard   │
-│  NEO-6M GPS  │     apmbob/tracker/gps  │   (Broker)   │                     │  Next.js Web │
-│              │                          │              │                     │              │
-│  WiFi atau   │                          │              │                     │ localhost:3000│
-│  SIM800L*    │                          │              │                     │              │
-└──────────────┘                          └──────────────┘                     └──────────────┘
+┌──────────────────┐     MQTT (TLS 8883)     ┌──────────────┐     Firebase RTDB     ┌──────────────┐
+│   ESP32 + GPS +  │ ──────────────────────→ │  HiveMQ Cloud │ ←────────────────── │  Dashboard   │
+│   Relay/LED      │  apmbob/tracker/gps     │   (Broker)   │                     │  Next.js Web │
+│                  │  apmbob/tracker/zone    │              │                     │              │
+└────────┬─────────┘                          └──────────────┘                     └──────┬───────┘
+         │ WiFi (ciwak)                                                                    │
+         └─────────────────────────────────────────────────────────────────────────────────┘
+                                    MQTT WebSocket (8884)
 ```
 
-- **ESP32** membaca data GPS via Serial2, mengirim ke HiveMQ Cloud
+- **ESP32** membaca data GPS via Serial2, mengontrol relay GPIO25, mengirim ke HiveMQ Cloud
 - **Dashboard Next.js** subscribe MQTT via WebSocket (port 8884), menampilkan peta & data real-time
-- **Firebase RTDB** menyimpan history data untuk replay dan analisis
-
-> ⚠ *SIM800L masih dalam pengembangan — saat ini fallback ke WiFi*
+- **Firebase RTDB** menyimpan posisi terkini di `apmbob/tracker/latest`
+- **Auth** login via Firebase Email/Password sebelum akses dashboard
 
 ---
 
@@ -45,7 +45,7 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 |----------|--------|-----------|
 | **ESP32 DOIT DEVKIT V1** | Mikrokontroler utama | — |
 | **NEO-6M GPS Module** | Mendapatkan koordinat, kecepatan, heading | RX2=16, TX2=17 |
-| **SIM800L V2** *(opsional)* | Backup komunikasi seluler (GPRS) | RX=26, TX=27, RST=14 |
+| **JQC-3FF-S-Z Relay** | Kontrol LED/alarm zona keamanan | GPIO25 (LOW=trigger) |
 
 ### Wiring GPS NEO-6M
 
@@ -58,17 +58,15 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 
 > **Catatan:** Baud rate GPS = **9600 bps**. LED NEO-6M berkedip 1 detik saat fix didapat.
 
-### Wiring SIM800L V2 *(jika digunakan)*
+### Wiring Relay JQC-3FF-S-Z
 
-| SIM800L | ESP32 |
-|---------|-------|
-| 5VIN | Power bank 5V 2A (bukan dari USB ESP32) |
+| Relay | ESP32 |
+|-------|-------|
+| VCC | 5V |
 | GND | GND |
-| TXD | GPIO26 (Serial1 RX) |
-| RXD | GPIO27 (Serial1 TX) |
-| RST | GPIO14 |
+| IN | GPIO25 |
 
-> **Penting:** SIM800L butuh **arus 2A peak**. Power dari USB laptop saja **tidak cukup** — gunakan power bank atau adaptor khusus.
+> **Logika:** `GPIO LOW` = relay ON (alarm menyala), `GPIO HIGH` = relay OFF (aman). Module relay ini **LOW-trigger**.
 
 ---
 
@@ -76,7 +74,7 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 
 ### ✅ Real-time GPS Tracking
 - Posisi (lat/lng), kecepatan (km/h), heading (arah)
-- Update setiap 15 detik (real) / 30 detik (stale/no fix)
+- Update setiap 5 detik (real) / 10 detik (stale/no fix)
 - **Marker mobil** di peta yang bergerak otomatis
 
 ### ✅ Detail Satelit
@@ -102,6 +100,19 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 - Semua data GPS otomatis tersimpan di Firebase
 - Path: `apmbob/tracker/{timestamp}`
 - Data siap untuk history & analisis
+
+### ✅ Geo-Fence Zone (Keamanan)
+- Relay/LED on GPIO25 — menyala saat kendaraan keluar zona
+- Radius zona bisa diatur 5–500m dari dashboard
+- **Auto mode** — relay mati otomatis saat kembali ke zona
+- **Manual mode** — relay tetap menyala sampai di-reset dari dashboard
+- Lingkaran zona ditampilkan real-time di peta Leaflet
+- Konfigurasi zona tersimpan di NVS ESP32 — tidak hilang setelah restart
+
+### ✅ Firebase Auth (Email/Password)
+- Halaman login dengan autentikasi Firebase
+- Proteksi dashboard — redirect ke `/login` jika belum login
+- Tombol logout di sidebar
 
 ### ✅ Dashboard Neo-Brutalist
 - Desain border hitam tebal, shadow kotak, warna neon
@@ -142,6 +153,17 @@ ESP32 ──(TLS, port 8883)──→ HiveMQ Cloud
 ```
 - `mode: "gps"` = fix valid
 - `mode: "gps_stale"` = fix hilang, data adalah posisi terakhir
+- `zone` field — status zona, radius, mode (auto/manual)
+
+### 2b. Zone Logic (ESP32)
+```
+ESP32 ──(GPIO25)──→ Relay/LED
+```
+- ESP32 menerima konfigurasi zona via MQTT topic `apmbob/tracker/zone`
+- Menghitung jarak Haversine antara posisi GPS dan pusat zona
+- Jika jarak > radius → `digitalWrite(RELAY_PIN, LOW)` → relay ON (violated)
+- Jika kembali ke zona + mode **auto** → relay mati
+- Mode **manual** → relay tetap ON sampai ada perintah `reset` dari dashboard
 
 ### 3. Dashboard Web
 ```
@@ -162,18 +184,22 @@ HiveMQ Cloud ──(WebSocket, port 8884)──→ Next.js (browser)
 | `loop()` | Baca GPS, reconnect MQTT, kirim data periodik |
 | `parseGSV()` | Parse manual NMEA `$GPGSV` untuk detail satelit |
 | `buildSatJson()` | Bangun JSON array satelit untuk payload MQTT |
-| `simAtCmd()` | Kirim AT command ke SIM800L, baca response |
-| `simTestBaud()` | Auto-detect baud rate SIM800L |
+| `mqttCallback()` | MQTT subscribe — parse zone config JSON + NVS save |
+| `haversineDist()` | Hitung jarak posisi GPS ke pusat zona (meter) |
+| `loadZonePrefs()` / `saveZonePrefs()` | Baca/tulis zona ke NVS Preferences — persist antar restart |
 
 ### Next.js — `apmbob-web/src/app/page.tsx`
 | Bagian | Deskripsi |
 |--------|-----------|
-| `MQTT client` | Koneksi WebSocket ke HiveMQ Cloud, subscribe topic |
+| `MQTT client` | Koneksi WebSocket ke HiveCloud, subscribe topic |
 | `Leaflet map` | Map with tile layer, marker, zoom control |
-| `Polyline` | Trail pergerakan (putus-putus, warna berubah saat stale) |
-| `Satellite panel` | Daftar satelit dengan signal bars (dark theme) |
-| `Firebase write` | Dynamic import firebase, write setiap data masuk |
+| `Polyline` | Trail pergerakan (glow + main line) |
+| `Satellite panel` | Daftar satelit dengan signal bars 5 level |
+| `Firebase write` | Cached dynamic import, write ke `apmbob/tracker/latest` |
 | `GPS Lost timer` | Interval 1 detik update timer saat sinyal hilang |
+| `Zone panel` | Slider radius, toggle ON/OFF, mode Auto/Manual, Set Posisi, Reset |
+| `Zone circle` | Leaflet circle via ref — update realtime tanpa React state |
+| `Auth guard` | Firebase Email/Password — redirect ke `/login` jika belum login |
 
 ### Firebase — `apmbob-web/src/lib/firebase.ts`
 - Init Firebase dengan credentials project
@@ -196,10 +222,20 @@ cd Project-APMOB16
 
 ### 2. ESP32 — Upload Firmware
 1. Buka folder `Apmbob-Tracker` di VSCode (dengan PlatformIO)
-2. Edit `main.cpp` — sesuaikan **SSID WiFi** dan **password**:
+2. Buat file `src/secrets.h` dari template berikut:
    ```cpp
+   #ifndef SECRETS_H
+   #define SECRETS_H
+
    #define WIFI_SSID "NamaWiFi"
    #define WIFI_PASS "PasswordWiFi"
+
+   #define MQTT_BROKER "202f37f7e67c4292b30a95877382225e.s1.eu.hivemq.cloud"
+   #define MQTT_PORT 8883
+   #define MQTT_USER "kelompok16"
+   #define MQTT_PASS "Kelompok16"
+
+   #endif
    ```
 3. Klik **Upload** (panah kanan bawah) atau:
    ```bash
@@ -214,8 +250,15 @@ npm run dev
 ```
 Buka browser di `http://localhost:3000`
 
-### 4. Firebase (optional)
-- Buka `src/lib/firebase.ts` — sudah terisi credentials
+### 4. Environment Variables
+Dashboard menggunakan `.env.local` untuk konfigurasi (jangan di-commit):
+```bash
+cd apmbob-web
+cp .env.example .env.local
+# Edit .env.local sesuai kredensial lo
+```
+
+### 5. Firebase (optional)
 - Buka **Firebase Console** → Realtime Database → Rules:
   ```json
   {
@@ -225,6 +268,8 @@ Buka browser di `http://localhost:3000`
     }
   }
   ```
+- Buka **Authentication** → Sign-in method → **Email/Password** → **Enable**
+- Tambah user di tab **Users** → **Add user**
 
 ---
 
@@ -241,12 +286,11 @@ Buka browser di `http://localhost:3000`
 - Banner merah **"GPS LOST"** saat satelit hilang
 
 ### Konfigurasi MQTT (jika ingin ganti broker)
-Di `page.tsx`:
-```javascript
-const MQTT_HOST = "wss://broker-anda.hivemq.cloud:8884/mqtt";
-const MQTT_USER = "username";
-const MQTT_PASS = "password";
-const MQTT_TOPIC = "apmbob/tracker/gps";
+Di `.env.local`:
+```
+NEXT_PUBLIC_MQTT_HOST=wss://broker-anda.hivemq.cloud:8884/mqtt
+NEXT_PUBLIC_MQTT_USER=username
+NEXT_PUBLIC_MQTT_PASS=password
 ```
 
 ---
