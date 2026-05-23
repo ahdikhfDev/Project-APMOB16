@@ -65,8 +65,8 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 | VCC | 5V |
 | GND | GND |
 | IN | GPIO25 |
-| COM | ke (+) LED |
-| NC | ke (-) LED (Normally Closed — LED menyala saat relay OFF) |
+| COM | ke (+) BATRE |
+| NC | ke (+) LED (Normally Closed — LED menyala saat relay OFF) |
 
 > **Logika:** Relay **LOW-trigger**. LED dipasang ke **COM & NC**:
 > - `GPIO HIGH` = relay OFF → NC tertutup → **LED menyala** (dalam zona)
