@@ -64,20 +64,6 @@ export default function Home() {
   const { user, loading: authLoading, logout } = useAuth();
   const router = useRouter();
 
-  useEffect(() => {
-    if (!authLoading && !user) router.replace("/login");
-  }, [user, authLoading, router]);
-
-  if (authLoading) return (
-    <div className="h-screen w-screen flex items-center justify-center bg-[#f4eedd]">
-      <div className="text-center">
-        <i className="fa-solid fa-satellite-dish fa-spin text-5xl text-black"></i>
-        <p className="text-sm font-bold uppercase mt-4 tracking-widest">Memuat...</p>
-      </div>
-    </div>
-  );
-  if (!user) return null;
-
   const [gps, setGps] = useState<GpsData | null>(null);
   const [gpsLost, setGpsLost] = useState(false);
   const [gpsLostSec, setGpsLostSec] = useState(0);
@@ -94,6 +80,20 @@ export default function Home() {
   const trailRefs = useRef<any>({ polyline: null, glowLine: null, startMarker: null, map: null, points: [] });
   const zoneRef = useRef({ L: null as any, circle: null as any, radius: 50, centerLat: null as number | null, centerLng: null as number | null, active: false, status: "inactive" });
   const mqttRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!authLoading && !user) router.replace("/login");
+  }, [user, authLoading, router]);
+
+  if (authLoading) return (
+    <div className="h-screen w-screen flex items-center justify-center bg-[#f4eedd]">
+      <div className="text-center">
+        <i className="fa-solid fa-satellite-dish fa-spin text-5xl text-black"></i>
+        <p className="text-sm font-bold uppercase mt-4 tracking-widest">Memuat...</p>
+      </div>
+    </div>
+  );
+  if (!user) return null;
 
   useEffect(() => {
     Promise.all([import("leaflet"), import("mqtt")]).then(([leaf, mq]) => {
