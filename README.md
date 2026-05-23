@@ -72,6 +72,18 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 > - `GPIO HIGH` = relay OFF → NC tertutup → **LED menyala** (dalam zona)
 > - `GPIO LOW` = relay ON → NC terbuka → **LED mati** (melanggar zona)
 
+### Wiring SIM800L V2 *(jika digunakan)*
+
+| SIM800L | ESP32 |
+|---------|-------|
+| VCC | 5V |
+| GND | GND |
+| TXD | GPIO26 (Serial1 RX) |
+| RXD | GPIO27 (Serial1 TX) |
+| RST | GPIO14 |
+
+> **Catatan:** SIM800L butuh arus 2A peak — pastikan power supply cukup.
+
 ---
 
 ## ✨ Fitur
