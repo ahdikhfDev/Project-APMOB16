@@ -60,17 +60,17 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 
 ### Wiring Relay JQC-3FF-S-Z
 
-| Relay | ESP32 / Motor |
-|-------|---------------|
+| Relay | ESP32 / LED |
+|-------|-------------|
 | VCC | 5V |
 | GND | GND |
 | IN | GPIO25 |
-| COM | ke power motor |
-| NC | ke motor (Normally Closed — motor nyala saat relay OFF) |
+| COM | ke (+) LED |
+| NC | ke (-) LED (Normally Closed — LED menyala saat relay OFF) |
 
-> **Logika:** Relay **LOW-trigger**. Motor dipasang ke **COM & NC**:
-> - `GPIO HIGH` = relay OFF → NC tertutup (motor nyala)
-> - `GPIO LOW` = relay ON → NC terbuka (motor mati)
+> **Logika:** Relay **LOW-trigger**. LED dipasang ke **COM & NC**:
+> - `GPIO HIGH` = relay OFF → NC tertutup → **LED menyala** (dalam zona)
+> - `GPIO LOW` = relay ON → NC terbuka → **LED mati** (melanggar zona)
 
 ---
 
@@ -106,7 +106,7 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 - Data siap untuk history & analisis
 
 ### ✅ Geo-Fence Zone (Keamanan)
-- Relay/LED on GPIO25 — menyala saat kendaraan keluar zona
+- Relay/LED on GPIO25 — **mati** saat kendaraan keluar zona (NC terbuka)
 - Radius zona bisa diatur 5–500m dari dashboard
 - **Auto mode** — relay mati otomatis saat kembali ke zona
 - **Manual mode** — relay tetap menyala sampai di-reset dari dashboard
@@ -165,9 +165,9 @@ ESP32 ──(GPIO25)──→ Relay/LED
 ```
 - ESP32 menerima konfigurasi zona via MQTT topic `apmbob/tracker/zone`
 - Menghitung jarak Haversine antara posisi GPS dan pusat zona
-- Jika jarak > radius → `digitalWrite(RELAY_PIN, LOW)` → relay ON (violated)
-- Jika kembali ke zona + mode **auto** → relay mati
-- Mode **manual** → relay tetap ON sampai ada perintah `reset` dari dashboard
+- Jika jarak > radius → `digitalWrite(RELAY_PIN, LOW)` → relay ON → NC terbuka → **LED mati** (violated)
+- Jika kembali ke zona + mode **auto** → relay OFF → NC tertutup → **LED nyala** (safe)
+- Mode **manual** → relay tetap ON (LED mati) sampai ada perintah `reset` dari dashboard
 
 ### 3. Dashboard Web
 ```
