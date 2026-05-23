@@ -80,22 +80,15 @@ export default function Home() {
   const trailRefs = useRef<any>({ polyline: null, glowLine: null, startMarker: null, map: null, points: [] });
   const zoneRef = useRef({ L: null as any, circle: null as any, radius: 50, centerLat: null as number | null, centerLng: null as number | null, active: false, status: "inactive" });
   const mqttRef = useRef<any>(null);
+  const mapInited = useRef(false);
 
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
   }, [user, authLoading, router]);
 
-  if (authLoading) return (
-    <div className="h-screen w-screen flex items-center justify-center bg-[#f4eedd]">
-      <div className="text-center">
-        <i className="fa-solid fa-satellite-dish fa-spin text-5xl text-black"></i>
-        <p className="text-sm font-bold uppercase mt-4 tracking-widest">Memuat...</p>
-      </div>
-    </div>
-  );
-  if (!user) return null;
-
   useEffect(() => {
+    if (authLoading || !user || mapInited.current) return;
+    mapInited.current = true;
     Promise.all([import("leaflet"), import("mqtt")]).then(([leaf, mq]) => {
       const L = leaf.default;
       const mqtt = mq.default;
@@ -291,7 +284,7 @@ export default function Home() {
         map.remove();
       };
     });
-  }, []);
+  }, [authLoading, user]);
 
   useEffect(() => {
     if (!gpsLost) return;
@@ -300,6 +293,16 @@ export default function Home() {
     }, 1000);
     return () => clearInterval(timer);
   }, [gpsLost]);
+
+  if (authLoading) return (
+    <div className="h-screen w-screen flex items-center justify-center bg-[#f4eedd]">
+      <div className="text-center">
+        <i className="fa-solid fa-satellite-dish fa-spin text-5xl text-black"></i>
+        <p className="text-sm font-bold uppercase mt-4 tracking-widest">Memuat...</p>
+      </div>
+    </div>
+  );
+  if (!user) return null;
 
   const statusColor =
     status === "connected" ? "bg-[#c6f91f]" : status === "connecting" ? "bg-[#ffdb00]" : "bg-[#ff4d4d]";
