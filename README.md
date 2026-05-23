@@ -60,13 +60,17 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 
 ### Wiring Relay JQC-3FF-S-Z
 
-| Relay | ESP32 |
-|-------|-------|
+| Relay | ESP32 / Motor |
+|-------|---------------|
 | VCC | 5V |
 | GND | GND |
 | IN | GPIO25 |
+| COM | ke power motor |
+| NC | ke motor (Normally Closed — motor nyala saat relay OFF) |
 
-> **Logika:** `GPIO LOW` = relay ON (alarm menyala), `GPIO HIGH` = relay OFF (aman). Module relay ini **LOW-trigger**.
+> **Logika:** Relay **LOW-trigger**. Motor dipasang ke **COM & NC**:
+> - `GPIO HIGH` = relay OFF → NC tertutup (motor nyala)
+> - `GPIO LOW` = relay ON → NC terbuka (motor mati)
 
 ---
 
