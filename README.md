@@ -62,7 +62,7 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 
 | Relay | ESP32 / LED |
 |-------|-------------|
-| VCC | 5V |
+| VCC | 3.3V |
 | GND | GND |
 | IN | GPIO25 |
 | COM | ke (+) BATRE |
