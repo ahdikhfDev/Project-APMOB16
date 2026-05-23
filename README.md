@@ -14,6 +14,7 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 - [Setup & Instalasi](#-setup--instalasi)
 - [Dashboard Web](#-dashboard-web)
 - [Perjalanan Kode & Pelajaran](#-perjalanan-kode--pelajaran)
+- [📘 MODE BELAJAR — Panduan Lengkap Kode](./MODE_BELAJAR.md)
 - [FAQ / Troubleshooting](#-faq--troubleshooting)
 - [Lisensi](#-lisensi)
 
