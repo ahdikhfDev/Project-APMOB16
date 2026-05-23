@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
-import { KalmanFilter } from "@/lib/kalman";
 
 const MQTT_HOST = process.env.NEXT_PUBLIC_MQTT_HOST!;
 const MQTT_USER = process.env.NEXT_PUBLIC_MQTT_USER!;
@@ -77,7 +76,6 @@ export default function Home() {
   const [zoneActive, setZoneActive] = useState(false);
   const [zoneManualMode, setZoneManualMode] = useState(false);
   const [zoneStatus, setZoneStatus] = useState<"safe" | "violated" | "inactive">("inactive");
-  const [filterMode, setFilterMode] = useState<"threshold" | "kalman">("kalman");
   const lastFixTime = useRef<number>(Date.now());
   const trailRefs = useRef<any>({ polyline: null, glowLine: null, startMarker: null, map: null, points: [] });
   const zoneRef = useRef({ L: null as any, circle: null as any, radius: 50, centerLat: null as number | null, centerLng: null as number | null, active: false, status: "inactive" });
@@ -86,9 +84,6 @@ export default function Home() {
   const stableLatlng = useRef<[number, number] | null>(null);
   const MOVE_THRESHOLD_M = 5;
   const PAN_THRESHOLD_M = 15;
-  const kalmanLat = useRef(new KalmanFilter());
-  const kalmanLng = useRef(new KalmanFilter());
-  const filterModeRef = useRef<"threshold" | "kalman">("kalman");
 
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
@@ -174,18 +169,7 @@ export default function Home() {
           }).catch((e) => console.error("Firebase write error", e));
 
           if (data.lat && data.lng) {
-            const rawLat = data.lat;
-            const rawLng = data.lng;
-            let displayLat = rawLat;
-            let displayLng = rawLng;
-            if (filterModeRef.current === "kalman" && !isStale) {
-              displayLat = kalmanLat.current.update(rawLat);
-              displayLng = kalmanLng.current.update(rawLng);
-            } else {
-              kalmanLat.current.reset(rawLat);
-              kalmanLng.current.reset(rawLng);
-            }
-            const latlng: [number, number] = [displayLat, displayLng];
+            const latlng: [number, number] = [data.lat, data.lng];
             const distMoved = stableLatlng.current
               ? HAVERSINE_KM(stableLatlng.current[0], stableLatlng.current[1], latlng[0], latlng[1]) * 1000
               : Infinity;
@@ -199,7 +183,6 @@ export default function Home() {
               if (isFirst || isMoved) shouldAddTrail = true;
               if (shouldAddTrail) {
                 trailPoints.push(latlng);
-                stableLatlng.current = latlng;
                 if (trailPoints.length > TRAIL_MAX) {
                   const decimated: [number, number][] = [];
                   for (let i = 0; i < trailPoints.length; i += 2) decimated.push(trailPoints[i]);
@@ -269,10 +252,12 @@ export default function Home() {
 
             if (!markerRef) {
               markerRef = L.marker(latlng, { icon }).addTo(map);
+              stableLatlng.current = latlng;
             } else {
               markerRef.setIcon(icon);
-              if (filterModeRef.current === "kalman" || isMoved) {
+              if (isMoved) {
                 markerRef.setLatLng(latlng);
+                stableLatlng.current = latlng;
               }
             }
 
@@ -347,7 +332,6 @@ export default function Home() {
   zoneRef.current.centerLng = zoneCenterLng;
   zoneRef.current.active = zoneActive;
   zoneRef.current.status = zoneStatus;
-  filterModeRef.current = filterMode;
 
   const zUpdateMap = (lat: number, lng: number, rad: number, act: boolean, stat: string) => {
     const zr = zoneRef.current;
@@ -434,39 +418,6 @@ export default function Home() {
             <span className="font-bold text-black uppercase tracking-wider">{statusText}</span>
           </div>
           <i className={`${statusIcon} text-black text-xl`}></i>
-        </div>
-
-        {/* MODE FILTER TOGGLE */}
-        <div className="neo-card neo-shadow bg-white p-3 flex flex-col gap-2">
-          <div className="flex items-center gap-2 border-b-2 border-black pb-1">
-            <i className="fa-solid fa-microchip text-black text-sm"></i>
-            <p className="text-black text-[10px] font-bold uppercase tracking-wider">Mode Filter</p>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setFilterMode("threshold")}
-              className={`flex-1 text-[10px] font-bold uppercase tracking-wider border-2 border-black rounded px-2 py-1.5 transition-all ${
-                filterMode === "threshold"
-                  ? "bg-[#00e5ff] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-                  : "bg-gray-100 text-black"
-              }`}
-            >
-              <i className="fa-solid fa-equals mr-1"></i> Threshold
-            </button>
-            <button
-              onClick={() => setFilterMode("kalman")}
-              className={`flex-1 text-[10px] font-bold uppercase tracking-wider border-2 border-black rounded px-2 py-1.5 transition-all ${
-                filterMode === "kalman"
-                  ? "bg-[#c6f91f] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-                  : "bg-gray-100 text-black"
-              }`}
-            >
-              <i className="fa-solid fa-robot mr-1"></i> Kalman
-            </button>
-          </div>
-          <p className="text-[8px] font-bold text-gray-500 uppercase tracking-wider text-center">
-            {filterMode === "kalman" ? "● Smooth — trail & marker mulus" : "● Kasar — trail sesuai data mentah"}
-          </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
