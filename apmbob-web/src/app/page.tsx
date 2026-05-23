@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth";
 
 const MQTT_HOST = process.env.NEXT_PUBLIC_MQTT_HOST!;
 const MQTT_USER = process.env.NEXT_PUBLIC_MQTT_USER!;
@@ -59,6 +61,23 @@ const HAVERSINE_KM = (lat1: number, lng1: number, lat2: number, lng2: number) =>
 const TRAIL_MAX = 200;
 
 export default function Home() {
+  const { user, loading: authLoading, logout } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!authLoading && !user) router.replace("/login");
+  }, [user, authLoading, router]);
+
+  if (authLoading) return (
+    <div className="h-screen w-screen flex items-center justify-center bg-[#f4eedd]">
+      <div className="text-center">
+        <i className="fa-solid fa-satellite-dish fa-spin text-5xl text-black"></i>
+        <p className="text-sm font-bold uppercase mt-4 tracking-widest">Memuat...</p>
+      </div>
+    </div>
+  );
+  if (!user) return null;
+
   const [gps, setGps] = useState<GpsData | null>(null);
   const [gpsLost, setGpsLost] = useState(false);
   const [gpsLostSec, setGpsLostSec] = useState(0);
@@ -355,9 +374,9 @@ export default function Home() {
             <i className="fa-solid fa-satellite-dish text-2xl text-black"></i>
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tighter uppercase leading-none">Apmbob</h1>
+            <h1 className="text-2xl font-bold tracking-tighter uppercase leading-none">LacakIn</h1>
             <p className="font-semibold text-sm tracking-widest uppercase mt-1 bg-black text-white px-2 py-0.5 inline-block">
-              Tracker
+              Tracker Web
             </p>
           </div>
         </div>
@@ -669,6 +688,13 @@ export default function Home() {
               </span>
             </p>
           </div>
+
+          <button
+            onClick={logout}
+            className="col-span-2 text-[10px] font-bold uppercase tracking-wider bg-black text-white border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all mt-2"
+          >
+            <i className="fa-solid fa-right-from-bracket mr-1"></i> Keluar
+          </button>
         </div>
       </div>
 
