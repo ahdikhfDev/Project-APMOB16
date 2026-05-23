@@ -94,6 +94,11 @@ Sistem pelacakan kendaraan **real-time** berbasis **ESP32 + NEO-6M GPS** dengan 
 - Update setiap 5 detik (real) / 10 detik (stale/no fix)
 - **Marker mobil** di peta yang bergerak otomatis
 
+### ✅ GPS Noise Filter (Stabilisasi Peta)
+- **Marker & trail**: hanya update jika pergerakan > **5 meter** — GPS noise NEO-6M (~2.5m) diabaikan
+- **Map pan (peta geser)**: hanya geser jika pergerakan > **15 meter** — peta tetap stabil saat alat diem
+- **Sidebar (speed/sats/heading)**: tetap real-time, tidak kena filter
+
 ### ✅ Detail Satelit
 - **GSV Parsing** — membaca langsung dari NMEA `$GPGSV` 
 - Menampilkan: **PRN**, **elevasi**, **azimuth**, **SNR** (signal strength)
@@ -188,6 +193,10 @@ HiveMQ Cloud ──(WebSocket, port 8884)──→ Next.js (browser)
 ```
 - Dashboard subscribe ke topic MQTT via WebSocket
 - Update peta Leaflet, marker, polyline, dan sidebar secara real-time
+- GPS noise filter dual-threshold:
+  - **5 meter** — marker posisi & trail hanya bergerak jika GPS berpindah ≥5m (abaikan noise NEO-6M ~2.5m)
+  - **15 meter** — peta hanya geser (pan) jika pergerakan ≥15m (peta tetap di posisi saat alat diem)
+- Sidebar (speed, sats, heading) tetap update di setiap pesan — tidak kena filter
 - Tulis setiap data ke Firebase untuk persistensi
 
 ---
@@ -214,6 +223,7 @@ HiveMQ Cloud ──(WebSocket, port 8884)──→ Next.js (browser)
 | `Satellite panel` | Daftar satelit dengan signal bars 5 level |
 | `Firebase write` | Cached dynamic import, write ke `apmbob/tracker/latest` |
 | `GPS Lost timer` | Interval 1 detik update timer saat sinyal hilang |
+| `GPS noise filter` | `MOVE_THRESHOLD_M=5` (marker/trail), `PAN_THRESHOLD_M=15` (map pan) |
 | `Zone panel` | Slider radius, toggle ON/OFF, mode Auto/Manual, Set Posisi, Reset |
 | `Zone circle` | Leaflet circle via ref — update realtime tanpa React state |
 | `Auth guard` | Firebase Email/Password — redirect ke `/login` jika belum login |
@@ -515,6 +525,13 @@ Firebase: Paths can't contain ".", "#", "$", "[", or "]"
 - Butuh **view langit terbuka** (outdoor/teras)
 - Di dalam ruangan dekat jendela masih bisa tapi butuh waktu lebih lama (30-60 detik)
 - **Antena patch** harus menghadap langit — casing logam di atas antena akan menghalangi sinyal
+
+### 🔹 GPS — Kenapa posisi di peta gerak-gerak terus meskipun alat diam?
+- **Akurasi NEO-6M** hanya ~2.5m (CEP50) — 50% posisi yang dilaporkan bisa meleset sampai 2.5m dari posisi asli
+- **Atmospheric noise** — sinyal satelit terganggu ionosfer & troposfer
+- **Multipath** — sinyal memantul dari gedung/pohon sebelum sampai ke antena
+- **Fix:** Dashboard sudah pakai GPS noise filter dual-threshold (5m marker, 15m pan)
+- Kalau masih kepengen lebih stabil, threshold bisa dinaikkan di `page.tsx` variabel `MOVE_THRESHOLD_M` dan `PAN_THRESHOLD_M`
 
 ### 🔹 GPS — Kenapa sering ilang & susah balik?
 1. **Cold start lambat** — setelah fix hilang, NEO-6M harus mengunduh ephemeris data ulang
