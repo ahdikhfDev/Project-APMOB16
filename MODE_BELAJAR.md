@@ -869,6 +869,52 @@ if (zr.circle) {
 
 **Circle** — lingkaran Leaflet yang nunjukin area zona. Warna berubah merah kalo violated. Update lewat ref, bukan state, biar realtime.
 
+### 2.8.1 GPS Noise Filter — Biar Peta Gak Goyang
+
+> **Masalah:** NEO-6M akurasinya cuma ~2.5 meter. Meskipun alat diem di meja, koordinat yang dikirim tetep beda 1-5m tiap detik karena noise atmosfer & multipath. Akibatnya marker di map goyang terus.
+
+**Solusi:** Filter pake threshold jarak:
+
+```tsx
+const stableLatlng = useRef<[number, number] | null>(null);
+const MOVE_THRESHOLD_M = 5;   // marker & trail
+const PAN_THRESHOLD_M = 15;   // map pan (geser peta)
+```
+
+**Cara kerjanya:**
+1. Setiap ada data GPS masuk, hitung jarak dari `stableLatlng` terakhir pake rumus Haversine
+2. Kalo jaraknya < 5m → anggap noise, jangan update marker & trail
+3. Kalo jaraknya >= 5m → update marker & trail, simpan posisi baru sebagai `stableLatlng`
+4. Kalo jaraknya >= 15m → baru peta ikut geser (pan)
+
+```tsx
+// Hitung jarak dari posisi stabil terakhir
+const distMoved = stableLatlng.current
+  ? HAVERSINE_KM(stableLatlng.current[0], stableLatlng.current[1], latlng[0], latlng[1]) * 1000
+  : Infinity;
+const isMoved = distMoved >= MOVE_THRESHOLD_M;
+```
+
+**Kenapa threshold-nya beda?**
+- **Marker 5m** — NEO-6M noise maksimal ~4m. Threshold 5m = gak goyang pas diem, tapi respon kalo jalan 3-4 langkah
+- **Pan 15m** — Peta gak perlu ikut geser tiap kali marker bergerak dikit. Bayangin lo lagi zoom ke suatu titik, terus peta loncat-loncat tiap detik — bikin pusing. Peta cuma geser kalo alat beneran pindah agak jauh.
+- **Sidebar** (speed, sats, heading) **gak kena filter** — biar realtime
+
+**Yang gak kena filter:**
+```tsx
+setGps(data);           // ⚡ selalu update — sidebar tetap hidup
+setLastUpdate(...);     // ⚡ selalu update — timestamp terakhir
+```
+
+**Yang kena filter:**
+```tsx
+markerRef.setLatLng(latlng);  // cuma kalo isMoved == true
+map.panTo(latlng);            // cuma kalo distMoved >= 15m
+trailPoints.push(latlng);     // cuma kalo isMoved == true
+```
+
+**Kenapa pake `useRef` buat `stableLatlng`, bukan `useState`?** — Karena `stableLatlng` cuma dipake di dalem callback MQTT (bukan buat render UI). Pake state malah trigger re-render gak perlu.
+
 ## 2.9 Auth Guard
 
 ```tsx
@@ -1130,6 +1176,28 @@ body {
 ## 🔸 Kenapa Satelit Pindah-Pindah Terus?
 
 Itu normal. GPS satelit orbit di ketinggian 20.200 km dengan kecepatan 3.9 km/detik. Mereka naik (rise) dan tenggelam (set) di horizon kayak matahari. Komposisi satelit yang terlihat berubah terus.
+
+## 🔸 GPS Noise — Kenapa Posisi di Peta Goyang-Goyang?
+
+Ini **bukan error**, tapi keterbatasan hardware GPS consumer-grade:
+
+**Penyebab:**
+1. **Akurasi NEO-6M** cuma ~2.5m (CEP50) — 50% posisi yang dilaporkan bisa meleset sampai 2.5m
+2. **Atmospheric interference** — sinyal satelit melambat & membelok di ionosfer/troposfer
+3. **Multipath** — sinyal GPS mantul dari gedung, tembok, atau pohon sebelum nyampe antena
+4. **GDOP** (Geometric Dilution of Precision) — posisi satelit di langit mempengaruhi akurasi. Kalo ngumpul di satu area, akurasinya jelek
+
+**Solusi di kode:** GPS noise filter pake 2 threshold:
+- **Marker & trail** — hanya update kalo jarak ≥ 5m (`MOVE_THRESHOLD_M`)
+- **Map pan** — hanya geser kalo jarak ≥ 15m (`PAN_THRESHOLD_M`)
+
+Kalo masih kurang stabil, lo bisa naikin threshold di `page.tsx`:
+```tsx
+const MOVE_THRESHOLD_M = 10;  // marker gerak kalo >= 10m
+const PAN_THRESHOLD_M = 30;   // peta geser kalo >= 30m
+```
+
+**Yang gak kena filter:** speed, heading, sats, lastUpdate — tetap realtime.
 
 ## 🔸 MQTT Sering Gagal Konek?
 
