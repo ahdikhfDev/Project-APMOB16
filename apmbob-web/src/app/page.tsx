@@ -376,14 +376,14 @@ export default function Home() {
   return (
     <>
       {/* SIDEBAR */}
-      <div className="w-full md:w-1/3 lg:w-1/4 neo-card bg-white p-5 flex flex-col gap-5 z-10 overflow-y-auto h-auto md:h-full shrink-0">
-        <div className="flex items-center gap-3 pb-4 border-b-4 border-black">
-          <div className="bg-[#c6f91f] p-3 border-2 border-black rounded shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">
-            <i className="fa-solid fa-satellite-dish text-2xl text-black"></i>
+      <div className="w-full md:w-1/3 lg:w-1/4 neo-card bg-white p-3 md:p-5 flex flex-col gap-2 md:gap-5 z-10 overflow-y-auto max-h-[40vh] md:max-h-none md:h-full shrink-0">
+        <div className="flex items-center gap-3 pb-2 md:pb-4 border-b-4 border-black">
+          <div className="bg-[#c6f91f] p-2 md:p-3 border-2 border-black rounded shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">
+            <i className="fa-solid fa-satellite-dish text-lg md:text-2xl text-black"></i>
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tighter uppercase leading-none">LacakIn</h1>
-            <p className="font-semibold text-sm tracking-widest uppercase mt-1 bg-black text-white px-2 py-0.5 inline-block">
+            <h1 className="text-lg md:text-2xl font-bold tracking-tighter uppercase leading-none">LacakIn</h1>
+            <p className="font-semibold text-[10px] md:text-sm tracking-widest uppercase mt-1 bg-black text-white px-2 py-0.5 inline-block">
               Tracker Web
             </p>
           </div>
@@ -420,29 +420,29 @@ export default function Home() {
           <i className={`${statusIcon} text-black text-xl`}></i>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div className={`col-span-2 neo-card neo-shadow p-5 relative overflow-hidden group ${gpsLost ? "bg-gray-300" : "bg-[#c6f91f]"}`}>
-            <i className="fa-solid fa-gauge-high absolute -right-2 -top-2 text-7xl text-black opacity-10 group-hover:scale-110 transition-transform"></i>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+          <div className={`md:col-span-2 neo-card neo-shadow p-3 md:p-5 relative overflow-hidden group ${gpsLost ? "bg-gray-300" : "bg-[#c6f91f]"}`}>
+            <i className="fa-solid fa-gauge-high absolute -right-2 -top-2 text-5xl md:text-7xl text-black opacity-10 group-hover:scale-110 transition-transform"></i>
             <div className="border-b-2 border-black mb-2 inline-block">
-              <p className="text-black text-sm font-bold uppercase tracking-wider">Kecepatan</p>
+              <p className="text-black text-[10px] md:text-sm font-bold uppercase tracking-wider">Kecepatan</p>
             </div>
             <div className="flex items-end gap-2">
-              <span className="text-5xl font-extrabold text-black tracking-tighter">
+              <span className="text-3xl md:text-5xl font-extrabold text-black tracking-tighter">
                 {gps ? gps.speed.toFixed(1) : "0.0"}
               </span>
-              <span className="text-black font-bold text-xl mb-1 border-2 border-black px-2 py-0.5 rounded bg-white">
+              <span className="text-black font-bold text-sm md:text-xl mb-1 border-2 border-black px-2 py-0.5 rounded bg-white">
                 km/h
               </span>
             </div>
           </div>
 
-          <div className="col-span-2 neo-card neo-shadow bg-[#0d0d0d] p-4">
-            <div className="flex items-center gap-2 mb-3 border-b-2 border-[#c6f91f] pb-2">
-              <i className="fa-solid fa-satellite-dish text-[#c6f91f]"></i>
-              <p className="text-[#c6f91f] text-sm font-bold uppercase tracking-wider">Satelit Terlihat</p>
-              <span className="ml-auto text-[#c6f91f] font-extrabold text-lg">{gps ? gps.sats : 0}</span>
+          <div className="md:col-span-2 neo-card neo-shadow bg-[#0d0d0d] p-3 md:p-4">
+            <div className="flex items-center gap-2 mb-2 md:mb-3 border-b-2 border-[#c6f91f] pb-1 md:pb-2">
+              <i className="fa-solid fa-satellite-dish text-[#c6f91f] text-sm md:text-base"></i>
+              <p className="text-[#c6f91f] text-[10px] md:text-sm font-bold uppercase tracking-wider">Satelit</p>
+              <span className="ml-auto text-[#c6f91f] font-extrabold text-base md:text-lg">{gps ? gps.sats : 0}</span>
             </div>
-            <div className="flex flex-col gap-1.5 max-h-[240px] overflow-y-auto">
+            <div className="flex flex-col gap-1 md:gap-1.5 max-h-[120px] md:max-h-[240px] overflow-y-auto">
               {gps?.satellites && gps.satellites.length > 0 ? (
                 [...gps.satellites]
                   .sort((a, b) => b.s - a.s)
@@ -491,24 +491,24 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="neo-card neo-shadow bg-[#00e5ff] p-4 flex flex-col justify-center items-center text-center">
-            <div className="bg-white border-2 border-black rounded-full w-10 h-10 flex items-center justify-center mb-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+          <div className="neo-card neo-shadow bg-[#00e5ff] p-3 md:p-4 flex flex-col justify-center items-center text-center">
+            <div className="bg-white border-2 border-black rounded-full w-8 h-8 md:w-10 md:h-10 flex items-center justify-center mb-1 md:mb-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
               <i
-                className="fa-solid fa-location-arrow text-black text-lg transition-transform duration-500"
+                className="fa-solid fa-location-arrow text-black text-sm md:text-lg transition-transform duration-500"
                 style={{ transform: `rotate(${(gps?.heading ?? 0) - 45}deg)` }}
               ></i>
             </div>
             <div className="flex items-end gap-1">
-              <span className="text-3xl font-extrabold text-black">{gps ? gps.heading.toFixed(0) : "0"}</span>
-              <span className="text-black font-bold text-lg mb-1">°</span>
+              <span className="text-xl md:text-3xl font-extrabold text-black">{gps ? gps.heading.toFixed(0) : "0"}</span>
+              <span className="text-black font-bold text-sm md:text-lg mb-1">°</span>
             </div>
-            <span className="text-black text-xs font-bold uppercase tracking-widest mt-1">Arah</span>
+            <span className="text-black text-[10px] md:text-xs font-bold uppercase tracking-widest mt-1">Arah</span>
           </div>
 
-          <div className="col-span-2 neo-card neo-shadow bg-white p-4">
-            <div className="flex items-center gap-2 mb-3 border-b-2 border-black pb-2">
-              <i className="fa-solid fa-map-location-dot text-black"></i>
-              <p className="text-black text-sm font-bold uppercase">Titik Koordinat</p>
+          <div className="md:col-span-2 neo-card neo-shadow bg-white p-3 md:p-4">
+            <div className="flex items-center gap-2 mb-2 md:mb-3 border-b-2 border-black pb-1 md:pb-2">
+              <i className="fa-solid fa-map-location-dot text-black text-sm md:text-base"></i>
+              <p className="text-black text-[10px] md:text-sm font-bold uppercase">Koordinat</p>
               {gps && (
                 <span className={`ml-auto text-[10px] font-bold uppercase px-2 py-0.5 border-2 border-black rounded ${gpsLost ? "bg-[#ff4d4d] text-black" : "bg-[#c6f91f] text-black"}`}>
                   {gpsLost ? "STALE" : "LIVE"}
@@ -532,10 +532,10 @@ export default function Home() {
           </div>
 
           {/* ZONA KEAMANAN */}
-          <div className="col-span-2 neo-card neo-shadow bg-white p-4">
-            <div className="flex items-center gap-2 mb-3 border-b-2 border-black pb-2">
-              <i className="fa-solid fa-shield-halved text-black"></i>
-              <p className="text-black text-sm font-bold uppercase">Zona Keamanan</p>
+          <div className="md:col-span-2 neo-card neo-shadow bg-white p-3 md:p-4">
+            <div className="flex items-center gap-2 mb-2 md:mb-3 border-b-2 border-black pb-1 md:pb-2">
+              <i className="fa-solid fa-shield-halved text-black text-sm md:text-base"></i>
+              <p className="text-black text-[10px] md:text-sm font-bold uppercase">Zona Keamanan</p>
               <span
                 className={`ml-auto text-[10px] font-bold uppercase px-2 py-0.5 border-2 border-black rounded ${
                   zoneStatus === "safe" ? "bg-[#c6f91f] text-black" :
@@ -663,14 +663,14 @@ export default function Home() {
 
           {/* TRAIL STATS */}
           {trailCount > 0 && (
-            <div className="neo-card neo-shadow bg-white p-4">
-              <div className="flex items-center gap-2 mb-2 border-b-2 border-black pb-2">
-                <i className="fa-solid fa-route text-black"></i>
-                <p className="text-black text-sm font-bold uppercase">Jejak Pergerakan</p>
+            <div className="neo-card neo-shadow bg-white p-3 md:p-4">
+              <div className="flex items-center gap-2 mb-2 border-b-2 border-black pb-1 md:pb-2">
+                <i className="fa-solid fa-route text-black text-sm md:text-base"></i>
+                <p className="text-black text-[10px] md:text-sm font-bold uppercase">Jejak</p>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold bg-black text-white px-2 py-1 rounded">TITIK</span>
-                <span className="font-extrabold text-2xl text-black font-mono tracking-tighter">{trailCount}</span>
+                <span className="text-[10px] md:text-xs font-bold bg-black text-white px-2 py-1 rounded">TITIK</span>
+                <span className="font-extrabold text-xl md:text-2xl text-black font-mono tracking-tighter">{trailCount}</span>
               </div>
               <button
                 onClick={() => {
@@ -681,17 +681,16 @@ export default function Home() {
                   t.points.length = 0;
                   setTrailCount(0);
                 }}
-                className="mt-3 w-full text-[10px] font-bold uppercase tracking-wider bg-[#ff4d4d] text-black border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all"
+                className="mt-2 md:mt-3 w-full text-[10px] font-bold uppercase tracking-wider bg-[#ff4d4d] text-black border-2 border-black rounded px-3 py-1.5 md:py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all"
               >
                 <i className="fa-solid fa-eraser mr-1"></i> Hapus Jejak
               </button>
             </div>
           )}
 
-          <div className="col-span-2 text-center mt-2 p-2 border-2 border-black border-dashed rounded bg-white">
-            <p className="text-xs font-bold uppercase text-black">
-              Update Terakhir: <br />
-              <span className={`text-base px-2 py-0.5 mt-1 inline-block border-2 border-black ${gpsLost ? "bg-[#ff4d4d] text-white" : "bg-[#ffdb00] text-black"}`}>
+          <div className="md:col-span-2 text-center p-2 border-2 border-black border-dashed rounded bg-white">
+            <p className="text-[10px] md:text-xs font-bold uppercase text-black">
+              Update: <span className={`text-xs md:text-base px-2 py-0.5 inline-block border-2 border-black ${gpsLost ? "bg-[#ff4d4d] text-white" : "bg-[#ffdb00] text-black"}`}>
                 {lastUpdate}
               </span>
             </p>
@@ -699,7 +698,7 @@ export default function Home() {
 
           <button
             onClick={logout}
-            className="col-span-2 text-[10px] font-bold uppercase tracking-wider bg-black text-white border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all mt-2"
+            className="md:col-span-2 text-[10px] font-bold uppercase tracking-wider bg-black text-white border-2 border-black rounded px-3 py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all"
           >
             <i className="fa-solid fa-right-from-bracket mr-1"></i> Keluar
           </button>
@@ -707,7 +706,7 @@ export default function Home() {
       </div>
 
       {/* MAP */}
-      <div className="flex-1 h-full w-full relative neo-card overflow-hidden">
+      <div className="flex-1 min-h-0 w-full relative neo-card overflow-hidden">
         <div id="map" className="h-full w-full"></div>
       </div>
     </>
