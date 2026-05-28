@@ -120,6 +120,28 @@ void buildSatJson(char* buf, int bufSize) {
   pos += snprintf(buf + pos, bufSize - pos, "]");
 }
 
+// Kalman 1D filter untuk smoothing GPS
+class Kalman1D {
+  double x, p, q, r, k;
+public:
+  Kalman1D(double meaNoise, double procNoise)
+    : x(0), p(1), q(procNoise), r(meaNoise), k(0) {}
+  double update(double z) {
+    p += q;
+    k = p / (p + r);
+    x += k * (z - x);
+    p *= (1 - k);
+    return x;
+  }
+  void reset(double pos) { x = pos; p = 1; }
+};
+
+Kalman1D latFilter(0.00001, 0.000001);
+Kalman1D lngFilter(0.00001, 0.000001);
+double stableLat = 0, stableLng = 0;
+unsigned long lastPublishMs = 0;
+const float MOVE_THRESHOLD_M = 5;
+
 float haversineDist(double lat1, double lng1, double lat2, double lng2) {
   double dLat = (lat2 - lat1) * DEG_TO_RAD;
   double dLng = (lng2 - lng1) * DEG_TO_RAD;
@@ -339,10 +361,12 @@ void loop() {
     }
   }
 
-  // Simpan posisi terakhir
-  static float lastLat = 0, lastLng = 0, lastSpd = 0, lastCog = 0;
-  static int lastSats = 0;
+  // Variabel last published position
+  static double lastPubLat = 0, lastPubLng = 0;
+  static float lastPubSpd = 0, lastPubCog = 0;
+  static int lastPubSats = 0;
   static bool pernahFix = false;
+  static bool kalmanInit = false;
 
   // Kirim tiap 5 detik saat fix, 10 detik saat stale
   static unsigned long lastSend = 0;
@@ -351,14 +375,24 @@ void loop() {
   lastSend = millis();
 
   if (gps.location.isValid()) {
-    lastLat = gps.location.lat();
-    lastLng = gps.location.lng();
-    lastSpd = gps.speed.kmph();
-    lastCog = gps.course.deg();
-    lastSats = gps.satellites.value();
+    // Kalman filter lat/lng
+    double rawLat = gps.location.lat();
+    double rawLng = gps.location.lng();
+    if (!kalmanInit) {
+      latFilter.reset(rawLat);
+      lngFilter.reset(rawLng);
+      stableLat = rawLat; stableLng = rawLng;
+      kalmanInit = true;
+    }
+    double smoothLat = latFilter.update(rawLat);
+    double smoothLng = lngFilter.update(rawLng);
+
+    float rawSpd = gps.speed.kmph();
+    float rawCog = gps.course.deg();
+    int rawSats = gps.satellites.value();
     pernahFix = true;
 
-    Serial.printf("[GPS] REAL | Lat: %.6f Lng: %.6f | %.1f km/h | %d sat\n", lastLat, lastLng, lastSpd, lastSats);
+    Serial.printf("[GPS] REAL | Smooth: %.6f,%.6f | %.1f km/h | %d sat\n", smoothLat, smoothLng, rawSpd, rawSats);
     if (satCount > 0) {
       Serial.printf("[SAT] Terlihat: %d satelit\n", satCount);
       for (int i = 0; i < satCount && i < 4; i++) {
@@ -366,9 +400,9 @@ void loop() {
       }
     }
 
-    // Zone logic
+    // Zone logic (pakai smoothed position biar relay gak goyang)
     if (zoneActive) {
-      float dist = haversineDist(zoneCenterLat, zoneCenterLng, lastLat, lastLng);
+      float dist = haversineDist(zoneCenterLat, zoneCenterLng, smoothLat, smoothLng);
       if (dist > zoneRadius) {
         if (!zoneViolated) {
           zoneViolated = true;
@@ -384,13 +418,41 @@ void loop() {
       }
     }
 
-    if (mqttClient.connected()) {
+    // Publish decision
+    bool shouldPublish = false;
+
+    // First publish
+    if (lastPubLat == 0 && lastPubLng == 0) {
+      shouldPublish = true;
+    }
+    // Check distance from last published position
+    else if (rawSats >= 4) {
+      double dist = haversineDist(lastPubLat, lastPubLng, smoothLat, smoothLng);
+      if (dist >= MOVE_THRESHOLD_M) shouldPublish = true;
+      if (!shouldPublish) {
+        Serial.printf("[GPS] Skip publish (gerak %.1fm, threshold %dm)\n", dist, MOVE_THRESHOLD_M);
+      }
+    }
+    // Force publish every 60s (heartbeat)
+    if (!shouldPublish && millis() - lastPublishMs > 60000) {
+      shouldPublish = true;
+      Serial.println("[GPS] Force publish (heartbeat 60s)");
+    }
+
+    if (shouldPublish && mqttClient.connected()) {
+      lastPubLat = smoothLat;
+      lastPubLng = smoothLng;
+      lastPubSpd = rawSpd;
+      lastPubCog = rawCog;
+      lastPubSats = rawSats;
+      lastPublishMs = millis();
+
       char buf[2048];
       const char* zoneStatus = zoneActive ? (zoneViolated ? "violated" : "safe") : "inactive";
       int pos = snprintf(buf, sizeof(buf),
         "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps\","
         "\"zone\":{\"status\":\"%s\",\"active\":%d,\"radius\":%.0f,\"mode\":\"%s\"},",
-        lastLat, lastLng, lastSpd, lastCog, lastSats,
+        smoothLat, smoothLng, rawSpd, rawCog, rawSats,
         zoneStatus, zoneActive, zoneRadius, zoneManualMode ? "manual" : "auto");
       buildSatJson(buf + pos, sizeof(buf) - pos);
       int len = strlen(buf);
@@ -405,7 +467,7 @@ void loop() {
       }
     }
   } else if (pernahFix) {
-    Serial.printf("[GPS] STALE | Lat: %.6f Lng: %.6f | SINYAL HILANG! sat terlihat: %d\n", lastLat, lastLng, gps.satellites.value());
+    Serial.printf("[GPS] STALE | Lat: %.6f Lng: %.6f | SINYAL HILANG! sat terlihat: %d\n", lastPubLat, lastPubLng, gps.satellites.value());
 
     if (mqttClient.connected()) {
       char buf[2048];
@@ -413,7 +475,7 @@ void loop() {
       int pos = snprintf(buf, sizeof(buf),
         "{\"device\":\"apmbob-01\",\"lat\":%.6f,\"lng\":%.6f,\"speed\":%.1f,\"heading\":%.1f,\"sats\":%d,\"mode\":\"gps_stale\","
         "\"zone\":{\"status\":\"%s\",\"active\":%d,\"radius\":%.0f,\"mode\":\"%s\"},",
-        lastLat, lastLng, lastSpd, lastCog, lastSats,
+        lastPubLat, lastPubLng, lastPubSpd, lastPubCog, lastPubSats,
         zoneStatus, zoneActive, zoneRadius, zoneManualMode ? "manual" : "auto");
       buildSatJson(buf + pos, sizeof(buf) - pos);
       int len = strlen(buf);
