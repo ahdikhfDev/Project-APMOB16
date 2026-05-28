@@ -23,6 +23,7 @@ interface GpsData {
   speed: number;
   heading: number;
   sats: number;
+  hdop?: number;       // HDOP * 100 dari ESP32 (dikirim kalo ada). Makin kecil makin akurat
   mode: string;
   satellites?: SatData[];
   zone?: ZoneData;
@@ -82,12 +83,17 @@ export default function Home() {
   const mqttRef = useRef<any>(null);
   const mapInited = useRef(false);
   const PAN_THRESHOLD_M = 15;
+  const MARKER_THROTTLE_MS = 1000; // Jangan update marker > 1x per detik biar gak goyang
+  const lastMarkerUpdate = useRef(0); // Timestamp terakhir marker di-update
 
   useEffect(() => {
+    // Auth guard: kalo belum login, redirect ke /login
     if (!authLoading && !user) router.replace("/login");
   }, [user, authLoading, router]);
 
   useEffect(() => {
+    // useEffect kedua: init map Leaflet + konek MQTT
+    // Cuma jalan sekali (mapInited.current = true)
     if (authLoading || !user || mapInited.current) return;
     mapInited.current = true;
     Promise.all([import("leaflet"), import("mqtt")]).then(([leaf, mq]) => {
@@ -95,10 +101,12 @@ export default function Home() {
       const mqtt = mq.default;
 
       const tr = trailRefs.current;
-      const map = L.map("map", { zoomControl: false }).setView([-6.4025, 106.7942], 14);
+      // Init pake Leaflet dengan tile CartoDB Voyager (gratis, gak perlu API key)
+      // maxZoom 21 biar bisa zoom super deket — cocok liat detail marker & trail
+      const map = L.map("map", { zoomControl: false }).setView([-6.4025, 106.7942], 18);
       tr.map = map;
       L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-        maxZoom: 19,
+        maxZoom: 21,
       }).addTo(map);
       L.control.zoom({ position: "bottomright" }).addTo(map);
       let polyline: L.Polyline | null = tr.polyline;
@@ -107,8 +115,11 @@ export default function Home() {
       let startMarker: L.Marker | null = tr.startMarker;
       const trailPoints: [number, number][] = tr.points;
 
+      // Simpen referensi Leaflet ke zoneRef buat dipake di zone circle
       zoneRef.current.L = L;
 
+      // --- Konek MQTT WebSocket ---
+      // Client ID disimpen di localStorage biar ganti-ganti tiap reconnect
       const client = mqtt.connect(MQTT_HOST, {
         username: MQTT_USER,
         password: MQTT_PASS,
@@ -152,7 +163,9 @@ export default function Home() {
             }
           }
 
-          // Write to Firebase RTDB — latest always, history max once per menit
+          // --- Firebase Write ---
+          // Tulis ke Firebase RTDB path "apmbob/tracker/latest"
+          // Selalu OVERWRITE (bukan bikin key baru) biar gak numpuk data
           firebaseWrite.then((fb) => {
             if (!fb) return;
             fb.set(fb.ref(fb.db, "apmbob/tracker/latest"), {
@@ -168,109 +181,127 @@ export default function Home() {
 
           if (data.lat && data.lng) {
             const latlng: [number, number] = [data.lat, data.lng];
-
             const markerColor = isStale ? "#888" : "#ff3366";
+            const now = Date.now();
 
-            if (!isStale) {
-              const isFirst = trailPoints.length === 0;
-              let shouldAddTrail = false;
-              if (isFirst) {
-                shouldAddTrail = true;
+            // --- MARKER THROTTLE ---
+            // Biar marker gak goyang: update marker maksimal 1x per MARKER_THROTTLE_MS
+            // TAPI data sidebar (speed, heading, sats) tetap update tiap ada pesan MQTT
+            // Alasan: sidebar perlu realtime, marker kalo terlalu sering update bakal kelihatan goyang
+            const canUpdateMarker = (now - lastMarkerUpdate.current >= MARKER_THROTTLE_MS);
+
+            // Trail dan marker cuma diupdate kalo throttle ngizinin
+            // Kecuali ini data pertama (isFirst) — harus tampil meski baru 1 data
+            if (canUpdateMarker) {
+              lastMarkerUpdate.current = now; // Catet kapan terakhir update
+
+              if (!isStale) {
+                const isFirst = trailPoints.length === 0;
+                let shouldAddTrail = false;
+                if (isFirst) {
+                  shouldAddTrail = true;
+                } else {
+                  const lastPt = trailPoints[trailPoints.length - 1];
+                  if (lastPt) {
+                    const d = HAVERSINE_KM(lastPt[0], lastPt[1], latlng[0], latlng[1]) * 1000;
+                    if (d >= 3) shouldAddTrail = true;
+                  }
+                }
+                if (shouldAddTrail) {
+                  trailPoints.push(latlng);
+                  if (trailPoints.length > TRAIL_MAX) {
+                    // Decimate: kalo trail > 200 titik, ambil tiap titik ke-2 biar gak berat
+                    const decimated: [number, number][] = [];
+                    for (let i  = 0; i < trailPoints.length; i += 2) decimated.push(trailPoints[i]);
+                    trailPoints.length = 0;
+                    trailPoints.push(...decimated);
+                  }
+                  setTrailCount(trailPoints.length);
+                }
+
+                // Glow trail (outer line — efek neon)
+                if (!glowLine) {
+                  glowLine = L.polyline(trailPoints, {
+                    color: "#c6f91f",
+                    weight: 10,
+                    opacity: 0.25,
+                    lineCap: "round",
+                    lineJoin: "round",
+                  }).addTo(map);
+                  tr.glowLine = glowLine;
+                } else {
+                  glowLine.setLatLngs(trailPoints);
+                }
+
+                // Main trail (inner line — warna kuning terang)
+                if (!polyline) {
+                  polyline = L.polyline(trailPoints, {
+                    color: "#ffdb00",
+                    weight: 4,
+                    opacity: 0.95,
+                    lineCap: "round",
+                    lineJoin: "round",
+                  }).addTo(map);
+                  tr.polyline = polyline;
+                } else {
+                  polyline.setLatLngs(trailPoints);
+                }
+
+                // Start marker: lingkaran biru di titik pertama trail
+                if (isFirst) {
+                  const startIcon = L.divIcon({
+                    className: "",
+                    html: `<div style="background:#00e5ff;width:14px;height:14px;border:3px solid white;border-radius:50%;box-shadow:0 0 0 3px #00e5ff"></div>`,
+                    iconSize: [14, 14],
+                    iconAnchor: [7, 7],
+                  });
+                  startMarker = L.marker(latlng, { icon: startIcon }).addTo(map);
+                  tr.startMarker = startMarker;
+                }
+              }
+
+              // Kalo sinyal ilang, trail diredupkan (fade)
+              if (isStale && trailPoints.length > 0) {
+                const fadeColor = "#888";
+                if (polyline) polyline.setStyle({ color: fadeColor, opacity: 0.4 });
+                if (glowLine) glowLine.setStyle({ color: fadeColor, opacity: 0.1 });
               } else {
+                if (polyline) polyline.setStyle({ color: "#ffdb00", opacity: 0.95 });
+                if (glowLine) glowLine.setStyle({ color: "#c6f91f", opacity: 0.25 });
+              }
+
+              // Marker pin di peta
+              const icon = L.divIcon({
+                className: "",
+                html: `<div class="map-pin" style="background:${markerColor}"><i class="fa-solid fa-location-dot"></i></div>`,
+                iconSize: [22, 22],
+                iconAnchor: [11, 22],
+              });
+
+              if (!markerRef) {
+                markerRef = L.marker(latlng, { icon }).addTo(map);
+              } else {
+                markerRef.setIcon(icon);
+                markerRef.setLatLng(latlng);
+              }
+
+              // Pan peta: kalo jarak >= PAN_THRESHOLD_M, peta ikut geser
+              // 15m threshold biar peta gak loncat-loncat pas marker gerak dikit
+              if (!isStale && trailPoints.length > 0) {
                 const lastPt = trailPoints[trailPoints.length - 1];
                 if (lastPt) {
                   const d = HAVERSINE_KM(lastPt[0], lastPt[1], latlng[0], latlng[1]) * 1000;
-                  if (d >= 3) shouldAddTrail = true;
+                  if (d >= PAN_THRESHOLD_M) map.panTo(latlng);
                 }
+              } else if (!isStale && trailPoints.length === 0) {
+                map.panTo(latlng);
               }
-              if (shouldAddTrail) {
-                trailPoints.push(latlng);
-                if (trailPoints.length > TRAIL_MAX) {
-                  const decimated: [number, number][] = [];
-                  for (let i = 0; i < trailPoints.length; i += 2) decimated.push(trailPoints[i]);
-                  trailPoints.length = 0;
-                  trailPoints.push(...decimated);
-                }
-                setTrailCount(trailPoints.length);
-              }
-
-              // Glow trail (outer)
-              if (!glowLine) {
-                glowLine = L.polyline(trailPoints, {
-                  color: "#c6f91f",
-                  weight: 10,
-                  opacity: 0.25,
-                  lineCap: "round",
-                  lineJoin: "round",
-                }).addTo(map);
-                tr.glowLine = glowLine;
-              } else {
-                glowLine.setLatLngs(trailPoints);
-              }
-
-              // Main trail (inner)
-              if (!polyline) {
-                polyline = L.polyline(trailPoints, {
-                  color: "#ffdb00",
-                  weight: 4,
-                  opacity: 0.95,
-                  lineCap: "round",
-                  lineJoin: "round",
-                }).addTo(map);
-                tr.polyline = polyline;
-              } else {
-                polyline.setLatLngs(trailPoints);
-              }
-
-              // Start marker (first point)
-              if (isFirst) {
-                const startIcon = L.divIcon({
-                  className: "",
-                  html: `<div style="background:#00e5ff;width:14px;height:14px;border:3px solid white;border-radius:50%;box-shadow:0 0 0 3px #00e5ff"></div>`,
-                  iconSize: [14, 14],
-                  iconAnchor: [7, 7],
-                });
-                startMarker = L.marker(latlng, { icon: startIcon }).addTo(map);
-                tr.startMarker = startMarker;
-              }
-            }
-
-            if (isStale && trailPoints.length > 0) {
-              // Still show trail but faded
-              const fadeColor = "#888";
-              if (polyline) polyline.setStyle({ color: fadeColor, opacity: 0.4 });
-              if (glowLine) glowLine.setStyle({ color: fadeColor, opacity: 0.1 });
-            } else {
-              if (polyline) polyline.setStyle({ color: "#ffdb00", opacity: 0.95 });
-              if (glowLine) glowLine.setStyle({ color: "#c6f91f", opacity: 0.25 });
-            }
-
-            const icon = L.divIcon({
-              className: "",
-              html: `<div class="map-pin" style="background:${markerColor}"><i class="fa-solid fa-location-dot"></i></div>`,
-              iconSize: [22, 22],
-              iconAnchor: [11, 22],
-            });
-
-            if (!markerRef) {
-              markerRef = L.marker(latlng, { icon }).addTo(map);
-            } else {
-              markerRef.setIcon(icon);
-              markerRef.setLatLng(latlng);
-            }
-
-            if (!isStale && trailPoints.length > 0) {
-              const lastPt = trailPoints[trailPoints.length - 1];
-              if (lastPt) {
-                const d = HAVERSINE_KM(lastPt[0], lastPt[1], latlng[0], latlng[1]) * 1000;
-                if (d >= PAN_THRESHOLD_M) map.panTo(latlng);
-              }
-            } else if (!isStale && trailPoints.length === 0) {
-              map.panTo(latlng);
             }
           }
 
-          // Zone circle (via ref biar realtime)
+          // --- Zone Circle (via ref biar realtime) ---
+          // Circle diupdate langsung lewat ref, bukan React state
+          // Biar gak kena masalah stale closure (nilai state yg kedaluwarsa di dalem callback)
           const zr = zoneRef.current;
           if (zr.circle) {
             if (data.zone?.active && zr.centerLat && zr.centerLng) {
@@ -297,6 +328,8 @@ export default function Home() {
     });
   }, [authLoading, user]);
 
+  // --- GPS Lost Timer ---
+  // Kalo mode "gps_stale" dari ESP32, hitung mundur detik sejak sinyal ilang
   useEffect(() => {
     if (!gpsLost) return;
     const timer = setInterval(() => {
@@ -305,6 +338,8 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [gpsLost]);
 
+  // --- AUTH GUARD ---
+  // Kalo loading auth, tampilkan spinner. Kalo gak login, return null (redirect di useEffect)
   if (authLoading) return (
     <div className="h-screen w-screen flex items-center justify-center bg-[#f4eedd]">
       <div className="text-center">
@@ -332,7 +367,10 @@ export default function Home() {
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
 
-  // Sync zone state ke ref (biar gak stale closure)
+  // --- SYNC ZONE STATE → REF ---
+  // React state di-sync ke ref di setiap render.
+  // Kenapa? Karena zone circle di-update dari dalam callback MQTT (yg pake ref),
+  // kalo ref gak di-sync, nilai zone di callback bakal kedaluwarsa (stale closure)
   zoneRef.current.radius = zoneRadius;
   zoneRef.current.centerLat = zoneCenterLat;
   zoneRef.current.centerLng = zoneCenterLng;
@@ -448,6 +486,20 @@ export default function Home() {
               <p className="text-[#c6f91f] text-[10px] md:text-sm font-bold uppercase tracking-wider">Satelit</p>
               <span className="ml-auto text-[#c6f91f] font-extrabold text-base md:text-lg">{gps ? gps.sats : 0}</span>
             </div>
+            {/* HDOP — Horizontal Dilution of Precision */}
+            {/* Makin kecil makin bagus. <100 (1.0) = ideal, 100-200 (1.0-2.0) = OK, >300 (3.0) = jelek */}
+            {gps?.hdop !== undefined && gps.hdop > 0 && (
+              <div className="flex items-center justify-between bg-black border border-gray-800 rounded px-3 py-1.5 mb-2">
+                <span className="text-[10px] font-bold text-gray-400 uppercase">HDOP</span>
+                <span className={`text-xs font-mono font-bold ${
+                  gps.hdop <= 100 ? "text-[#c6f91f]" :
+                  gps.hdop <= 200 ? "text-[#ffdb00]" :
+                  "text-[#ff4d4d]"
+                }`}>
+                  {(gps.hdop / 100).toFixed(1)}
+                </span>
+              </div>
+            )}
             <div className="flex flex-col gap-1 md:gap-1.5 max-h-[120px] md:max-h-[240px] overflow-y-auto">
               {gps?.satellites && gps.satellites.length > 0 ? (
                 [...gps.satellites]

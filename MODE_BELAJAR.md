@@ -555,6 +555,122 @@ mqttClient.publish(MQTT_TOPIC, buf);
 
 ---
 
+## 1.14 Kalman Filter & Threshold — Smoothing GPS di ESP32
+
+> **Masalah lama:** NEO-6M noise ~2.5m, meski alat diem, koordinat tetep beda-beda. Dulu filtering di dashboard, tapi MQTT-nya penuh noise.
+
+**Solusi baru:** Filter pindah ke ESP32. Data bersih dikirim ke MQTT, dashboard tinggal render.
+
+### 1.14.1 Kelas Kalman1D
+
+```cpp
+class Kalman1D {
+  double x, p, q, r, k;
+public:
+  Kalman1D(double meaNoise, double procNoise)
+    : x(0), p(1), q(procNoise), r(meaNoise), k(0) {}
+  double update(double z) {
+    p += q;                  // Predict: perbesar ketidakpastian
+    k = p / (p + r);         // Kalman gain
+    x += k * (z - x);        // Correct: update posisi
+    p *= (1 - k);            // Update ketidakpastian
+    return x;
+  }
+  void reset(double pos) { x = pos; p = 1; }
+};
+```
+
+**Cara kerja:**
+1. **Predict** (`p += q`) — makin lama tanpa data, ketidakpastian makin besar
+2. **Kalman gain** (`k = p / (p + r)`) — `r` = noise GPS, `p` = ketidakpastian filter. Kalo GPS noise gede → `k` kecil → filter gak percaya data baru. Kalo filter udah yakin (`p` kecil) → `k` kecil → gak goyang
+3. **Correct** (`x += k * (z - x)`) — update posisi sesuai gain
+4. **Update P** (`p *= (1 - k)`) — ketidakpastian menurun
+
+**Parameter:**
+- `meaNoise = 0.00001` (~1 meter dalam degrees) — seberapa noise GPS
+- `procNoise = 0.000001` (~0.1 meter) — seberapa cepat posisi bisa berubah
+
+### 1.14.2 Threshold 5m + Satelit Min 6 + HDOP Gate
+
+```cpp
+#define MIN_SATS 6          // Minimal satelit. 4 = 2D (bisa loncat), 6 = 3D stabil
+#define HDOP_THRESHOLD 300  // Maksimal HDOP (300 = 3.0). >3.0 = geometri jelek, skip
+
+bool hdopOk = true;
+if (gps.hdop.isValid()) {
+  hdopOk = (gps.hdop.value() <= HDOP_THRESHOLD);
+}
+
+if (rawSats >= MIN_SATS && hdopOk) {
+  double dist = haversineDist(lastPubLat, lastPubLng, smoothLat, smoothLng);
+  if (dist >= MOVE_THRESHOLD_M) {
+    lastPubLat = smoothLat;
+    lastPubLng = smoothLng;
+    // publish MQTT
+  }
+}
+```
+
+**Cuma publish MQTT kalo:**
+- **Satelit ≥ 6** (3D fix benar-benar stabil — dulu 4 masih bisa loncat)
+- **HDOP ≤ 3.0** (geometri satelit bagus — kalo HDOP gede, posisi gak akurat)
+- **Jarak dari posisi terakhir ≥ 5m** (gerak berarti)
+
+**Kenapa HDOP penting?** — Satelit 6 biji belum jamin akurat kalo letaknya berjejer di langit (geometri jelek). HDOP (Horizontal Dilution of Precision) ukur ini: makin kecil makin bagus.
+- `HDOP < 1.0` = Ideal
+- `HDOP 1.0–2.0` = Bagus
+- `HDOP 2.0–3.0` = Acceptable
+- `HDOP > 3.0` = Skip (posisi gak bisa dipercaya)
+
+### 1.14.3 Heartbeat 60 Detik — Tapi Tetap Cek Satelit + HDOP
+
+```cpp
+if (!shouldPublish && millis() - lastPublishMs > HEARTBEAT_MS) {
+  // Tetap cek: kalo satelit < 6 atau HDOP jelek, jangan publish
+  if (rawSats >= MIN_SATS && hdopOk) {
+    shouldPublish = true;
+  }
+}
+```
+
+Kalo diem 1 jam, ESP32 tetep publish tiap 60 detik biar dashboard tau "saya masih hidup". Tapi kalo sinyal lagi jelek (satelit < 6 atau HDOP > 3.0), heartbeat dilewati — daripada kirim data palsu yang bikin marker goyang.
+
+### 1.14.4 Alur Baru
+
+```
+GPS noise → Kalman filter → cek satelit ≥6 → cek HDOP ≤3.0 → threshold 5m → MQTT → Dashboard render
+                                       ↑                      ↑                           ↑
+                                 Semua gate lolos        Data bersih                  Throttle 1s
+```
+
+**3 lapis penyaring:**
+1. **Kalman** — smoothing posisi (hilangin noise kecil)
+2. **Satelit + HDOP** — skip kalo sinyal jelek (hindari data palsu)
+3. **Threshold 5m** — skip kalo gak gerak berarti (hemat bandwidth)
+
+**Ditambah throttle 1 detik di dashboard** — marker cuma diupdate maks 1x per detik, biar transisi di peta mulus.
+
+### 1.14.5 Perbandingan
+
+| | Sebelum (filter di dashboard) | Sesudah 1 (filter di ESP32) | **Sesudah 2 (plus HDOP + throttle)** |
+|---|---|---|---|
+| MQTT | Penuh noise (tiap 5 detik) | Hemat (cuma kalo gerak) | **Lebih hemat** (skip kalo HDOP jelek) |
+| Firebase | Data noise ikut nyimpan | Bersih | **Bersih + akurat** |
+| Trail | Berantakan | Rapi | **Rapi** |
+| Marker | Loncat | Mulus | **Super mulus** (HDOP + throttle) |
+| Filter lapisan | 0 di ESP32 | 2 (Kalman + threshold) | **4** (Kalman + sat-min + HDOP + throttle) |
+
+### 1.14.6 Ringkasan — Kenapa Sekarang Marker Gak Goyang?
+
+```
+Dulu:  GPS → publish tiap 5 detik → dashboard update marker tiap kali → GOYANG
+Sekarang:
+  GPS → Kalman smooth → cek satelit ≥6? → cek HDOP ≤3.0? → gerak ≥5m? → MQTT
+  → dashboard throttle 1s → marker update → DIAM
+```
+
+---
+
 # 💻 BAGIAN 2 — NEXT.JS DASHBOARD
 
 ## 2.1 Kenapa `"use client"`?
@@ -869,51 +985,59 @@ if (zr.circle) {
 
 **Circle** — lingkaran Leaflet yang nunjukin area zona. Warna berubah merah kalo violated. Update lewat ref, bukan state, biar realtime.
 
-### 2.8.1 GPS Noise Filter — Biar Peta Gak Goyang
+### 2.8.1 GPS Noise Filter — Filtering Pindah ke ESP32
 
-> **Masalah:** NEO-6M akurasinya cuma ~2.5 meter. Meskipun alat diem di meja, koordinat yang dikirim tetep beda 1-5m tiap detik karena noise atmosfer & multipath. Akibatnya marker di map goyang terus.
+> **Dulu:** Dashboard yang filter noise pake threshold 5m dan `stableLatlng` ref. **Sekarang:** ESP32 yang handle filtering — Kalman filter + threshold 5m + minimum 4 satelit. Dashboard tinggal render.
 
-**Solusi:** Filter pake threshold jarak:
-
+**Kode filtering di dashboard dihapus semua:**
 ```tsx
-const stableLatlng = useRef<[number, number] | null>(null);
-const MOVE_THRESHOLD_M = 5;   // marker & trail
-const PAN_THRESHOLD_M = 15;   // map pan (geser peta)
+// ❌ Gak ada lagi:
+// const stableLatlng = useRef<[number, number] | null>(null);
+// const MOVE_THRESHOLD_M = 5;
+// const distMoved = ...
+// const isMoved = ...
 ```
 
-**Cara kerjanya:**
-1. Setiap ada data GPS masuk, hitung jarak dari `stableLatlng` terakhir pake rumus Haversine
-2. Kalo jaraknya < 5m → anggap noise, jangan update marker & trail
-3. Kalo jaraknya >= 5m → update marker & trail, simpan posisi baru sebagai `stableLatlng`
-4. Kalo jaraknya >= 15m → baru peta ikut geser (pan)
-
+**Yang ada di dashboard sekarang cuma:**
 ```tsx
-// Hitung jarak dari posisi stabil terakhir
-const distMoved = stableLatlng.current
-  ? HAVERSINE_KM(stableLatlng.current[0], stableLatlng.current[1], latlng[0], latlng[1]) * 1000
-  : Infinity;
-const isMoved = distMoved >= MOVE_THRESHOLD_M;
+// PAN threshold — biar peta gak loncat tiap marker gerak dikit
+const PAN_THRESHOLD_M = 15;
+const zoomToFit = dist >= PAN_THRESHOLD_M;
 ```
 
-**Kenapa threshold-nya beda?**
-- **Marker 5m** — NEO-6M noise maksimal ~4m. Threshold 5m = gak goyang pas diem, tapi respon kalo jalan 3-4 langkah
-- **Pan 15m** — Peta gak perlu ikut geser tiap kali marker bergerak dikit. Bayangin lo lagi zoom ke suatu titik, terus peta loncat-loncat tiap detik — bikin pusing. Peta cuma geser kalo alat beneran pindah agak jauh.
-- **Sidebar** (speed, sats, heading) **gak kena filter** — biar realtime
+**Apa yang berubah:**
 
-**Yang gak kena filter:**
-```tsx
-setGps(data);           // ⚡ selalu update — sidebar tetap hidup
-setLastUpdate(...);     // ⚡ selalu update — timestamp terakhir
-```
+| Dulu (filter di dashboard) | Sekarang (filter di ESP32) |
+|---|---|
+| Data noise masuk MQTT tiap 5 detik | Data bersih, publish cuma kalo gerak ≥5m |
+| Dashboard harus hitung haversine + threshold | Dashboard tinggal render |
+| `stableLatlng` ref + `distMoved` + `isMoved` | Semua dihapus |
+| Kalman filter inline di TypeScript | Kalman di ESP32 (C++ class) |
+| Trail berpotensi duplikat | Trail langsung rapi |
 
-**Yang kena filter:**
-```tsx
-markerRef.setLatLng(latlng);  // cuma kalo isMoved == true
-map.panTo(latlng);            // cuma kalo distMoved >= 15m
-trailPoints.push(latlng);     // cuma kalo isMoved == true
-```
+**Yang masih ada di dashboard:**
+- **Pan threshold 15m** — ini UX preference, bukan filter. Biar peta gak loncat-loncat pas marker gerak dikit.
+- **Trail throttle 3m** — duplicate prevention tipis, jaga-jaga kalo ESP32 heartbeat (60 detik) publish posisi yg sama.
+- **Marker throttle 1 detik** — MARKER_THROTTLE_MS = 1000ms. Marker cuma diupdate maks 1x per detik, meski MQTT ngirim data tiap 5 detik. Dulu marker update tiap kali ada pesan masuk — sekarang ditahan biar transisi peta mulus.
+  ```tsx
+  const MARKER_THROTTLE_MS = 1000;
+  const lastMarkerUpdate = useRef(0);
+  // Di dalem callback MQTT:
+  const canUpdateMarker = (now - lastMarkerUpdate.current >= MARKER_THROTTLE_MS);
+  if (canUpdateMarker) {
+    lastMarkerUpdate.current = now;
+    // update marker, trail, pan
+  }
+  // TAPI: sidebar (speed, heading, sats) tetap update tiap ada pesan — gak kena throttle
+  ```
 
-**Kenapa pake `useRef` buat `stableLatlng`, bukan `useState`?** — Karena `stableLatlng` cuma dipake di dalem callback MQTT (bukan buat render UI). Pake state malah trigger re-render gak perlu.
+**Kenapa filtering pindah ke ESP32?**
+1. **MQTT bandwidth** — gak perlu kirim data noise. Bandwidth hemat.
+2. **Firebase writes** — cuma posisi berarti yg tersimpan.
+3. **Dashboard lebih ringan** — JavaScript gak perlu ngitung haversine tiap 5 detik.
+4. **Satu pintu** — filtering di satu tempat (ESP32) lebih gampang di-debug daripada filtering di 2 tempat.
+
+> Detail implementasi Kalman filter + threshold + heartbeat ada di **Bagian 1.14** (ESP32 Firmware).
 
 ## 2.9 Auth Guard
 
@@ -1187,17 +1311,13 @@ Ini **bukan error**, tapi keterbatasan hardware GPS consumer-grade:
 3. **Multipath** — sinyal GPS mantul dari gedung, tembok, atau pohon sebelum nyampe antena
 4. **GDOP** (Geometric Dilution of Precision) — posisi satelit di langit mempengaruhi akurasi. Kalo ngumpul di satu area, akurasinya jelek
 
-**Solusi di kode:** GPS noise filter pake 2 threshold:
-- **Marker & trail** — hanya update kalo jarak ≥ 5m (`MOVE_THRESHOLD_M`)
-- **Map pan** — hanya geser kalo jarak ≥ 15m (`PAN_THRESHOLD_M`)
+**Solusi di ESP32 (bukan dashboard):** GPS noise di-filter di firmware pake:
+1. **Kalman filter** — smoothing posisi (2 instance: lat + lng)
+2. **Threshold 5m** — cuma publish MQTT kalo gerak ≥ 5m
+3. **Minimum 4 satelit** — skip kalo fix gak valid
+4. **Heartbeat 60s** — force publish biar dashboard tau ESP32 masih hidup
 
-Kalo masih kurang stabil, lo bisa naikin threshold di `page.tsx`:
-```tsx
-const MOVE_THRESHOLD_M = 10;  // marker gerak kalo >= 10m
-const PAN_THRESHOLD_M = 30;   // peta geser kalo >= 30m
-```
-
-**Yang gak kena filter:** speed, heading, sats, lastUpdate — tetap realtime.
+Detail implementasi ada di **Bagian 1.14** — Kalman filter + threshold + heartbeat.
 
 ## 🔸 MQTT Sering Gagal Konek?
 
